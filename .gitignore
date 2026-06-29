@@ -1,0 +1,8 @@
+models/
+*.keras
+*.h5
+*.ckpt
+*.pt
+*.pth
+__pycache__/
+.env
