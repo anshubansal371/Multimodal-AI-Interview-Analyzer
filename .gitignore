@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+diarization_env/
+venv/
+
+# VS Code
+.vscode/
+
+# Models
+models/
+*.keras
+*.h5
+*.pt
+*.pth
+*.safetensors
+
+# Videos & Audio
+*.mp4
+*.wav
+*.mp3
+
+# Datasets
+Data/
+
+# Streamlit cache
+.streamlit/secrets.toml
