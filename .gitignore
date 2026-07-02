@@ -2,9 +2,9 @@
 __pycache__/
 *.pyc
 
-# Virtual environment
-diarization_env/
+# Virtual environments
 venv/
+diarization_env/
 
 # VS Code
 .vscode/
@@ -17,13 +17,13 @@ models/
 *.pth
 *.safetensors
 
+# Datasets
+Data/
+
 # Videos & Audio
 *.mp4
 *.wav
 *.mp3
 
-# Datasets
-Data/
-
-# Streamlit cache
+# Streamlit
 .streamlit/secrets.toml
