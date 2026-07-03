@@ -47,9 +47,8 @@ def download_all():
 
             gdown.download(
                 f"https://drive.google.com/uc?id={file_id}",
-                path,
+                output=path,
                 quiet=False,
-                fuzzy=True
             )
 
             if not os.path.exists(path):
