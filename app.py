@@ -211,9 +211,9 @@ def load_models():
             AutoTokenizer, AutoModelForSequenceClassification)
         roberta_path = os.path.join(MODELS_DIR, 'final_roberta_model')
         models['roberta_tok'] = AutoTokenizer.from_pretrained(
-            roberta_path, local_files_only=True)
+            roberta_path, local_files_only=True,use_fast=False)
         models['roberta'] = AutoModelForSequenceClassification\
-            .from_pretrained(roberta_path, local_files_only=True,use_fast=False)
+            .from_pretrained(roberta_path, local_files_only=True)
         models['roberta'].eval()
         with open(os.path.join(roberta_path, 'emotion_map.json')) as f:
             emotion2id = json.load(f)
