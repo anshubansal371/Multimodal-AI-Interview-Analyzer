@@ -203,10 +203,6 @@ def load_models():
         models['fusion'] = None
 
     try:
-        import transformers
-        import tokenizers
-        st.sidebar.write(f"Tokenizers: {tokenizers.__version__}")
-        st.sidebar.write(f"Transformers: {transformers.__version__}")
         from transformers import (
             AutoTokenizer, AutoModelForSequenceClassification)
         roberta_path = os.path.join(MODELS_DIR, 'final_roberta_model')
