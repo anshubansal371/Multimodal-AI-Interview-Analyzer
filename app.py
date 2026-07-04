@@ -213,14 +213,16 @@ def load_models():
         models['roberta_tok'] = AutoTokenizer.from_pretrained(
             roberta_path, local_files_only=True)
         models['roberta'] = AutoModelForSequenceClassification\
-            .from_pretrained(roberta_path, local_files_only=True)
+            .from_pretrained(roberta_path, local_files_only=True,use_fast=False)
         models['roberta'].eval()
         with open(os.path.join(roberta_path, 'emotion_map.json')) as f:
             emotion2id = json.load(f)
         models['id2emotion'] = {v: k for k, v in emotion2id.items()}
         st.sidebar.success("✅ Text model loaded")
     except Exception as e:
+        import traceback
         st.sidebar.error(f"❌ Text: {e}")
+        st.code(traceback.format_exc())
         models['roberta'] = None
 
     return models
