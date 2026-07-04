@@ -211,7 +211,7 @@ def load_models():
             AutoTokenizer, AutoModelForSequenceClassification)
         roberta_path = os.path.join(MODELS_DIR, 'final_roberta_model')
         models['roberta_tok'] = AutoTokenizer.from_pretrained(
-            roberta_path, local_files_only=True,use_fast=False)
+            roberta_path, local_files_only=True)
         models['roberta'] = AutoModelForSequenceClassification\
             .from_pretrained(roberta_path, local_files_only=True)
         models['roberta'].eval()
