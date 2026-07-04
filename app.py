@@ -216,9 +216,7 @@ def load_models():
         models['id2emotion'] = {v: k for k, v in emotion2id.items()}
         st.sidebar.success("✅ Text model loaded")
     except Exception as e:
-        import traceback
         st.sidebar.error(f"❌ Text: {e}")
-        st.code(traceback.format_exc())
         models['roberta'] = None
 
     return models
