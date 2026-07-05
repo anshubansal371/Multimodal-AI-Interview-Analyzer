@@ -14,3 +14,4 @@ gdown
 pydub
 scipy
 praat-parselmouth
+setuptools
