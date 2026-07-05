@@ -1,37 +1,47 @@
-# app.py — AI Interview Analyzer v5 (Final)
+# app.py — AI Interview Analyzer v3
+# Priority-1 rewrite: audio module, emotion-label removal,
+# confidence-weighted fusion, richer speech metrics,
+# template-based "AI-style" feedback synthesis.
+import streamlit as st
+import numpy as np
+import json
 import os
-import shutil
+import re
+import tempfile
+import subprocess
+import torch
+import tensorflow as tf
+from collections import Counter
+import plotly.graph_objects as go
+import os
+import streamlit as st
 
-# ── Auto-download models on first run ─────────────────
-_REQUIRED = [
+from download_models import download_all
+
+REQUIRED_FILES = [
+
     "models/face_model_best.keras",
+
     "models/audio_model_best.keras",
+
     "models/fusion_model_best.keras",
+
     "models/final_roberta_model/model.safetensors",
+
     "models/final_roberta_model/config.json",
+
     "models/final_roberta_model/tokenizer.json",
+
     "models/final_roberta_model/tokenizer_config.json",
+
     "models/final_roberta_model/emotion_map.json",
 ]
 
-if not all(os.path.exists(f) for f in _REQUIRED):
-    import streamlit as st
-    with st.spinner(
-            "⬇️ Downloading AI models... "
-            "First run only — takes 2-3 min"):
-        from download_models import download_all
-        download_all()
+if not all(os.path.exists(f) for f in REQUIRED_FILES):
 
-import re
-import json
-import tempfile
-import subprocess
-import numpy as np
-import torch
-import tensorflow as tf
-import streamlit as st
-import plotly.graph_objects as go
-from collections import Counter
+    with st.spinner("Downloading AI models... Please wait."):
+
+        download_all()
 
 st.set_page_config(
     page_title="AI Interview Analyzer",
@@ -42,124 +52,121 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main-header {
-        font-size:2.5rem; font-weight:bold;
-        text-align:center;
-        background:linear-gradient(90deg,#667eea,#764ba2);
-        -webkit-background-clip:text;
-        -webkit-text-fill-color:transparent;
-        padding:1rem 0;
+        font-size: 2.5rem; font-weight: bold;
+        text-align: center;
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        padding: 1rem 0;
     }
     .score-card {
-        background:linear-gradient(135deg,#667eea20,#764ba220);
-        border-radius:15px; padding:1.5rem;
-        border:1px solid #667eea40;
-        text-align:center; margin:0.5rem 0;
+        background: linear-gradient(135deg,#667eea20,#764ba220);
+        border-radius: 15px; padding: 1.5rem;
+        border: 1px solid #667eea40;
+        text-align: center; margin: 0.5rem 0;
     }
     .score-number {
-        font-size:2.5rem; font-weight:bold; color:#667eea;
+        font-size: 2.5rem; font-weight: bold; color: #667eea;
     }
     .trait-card {
-        background:#f8f9fa; border-radius:10px;
-        padding:0.8rem 1rem; margin:0.4rem 0;
-        border-left:4px solid #667eea;
+        background: #f8f9fa; border-radius: 10px;
+        padding: 0.8rem 1rem; margin: 0.4rem 0;
+        border-left: 4px solid #667eea;
     }
     .feedback-card {
-        background:#f8f9fa; border-radius:10px;
-        padding:1rem; margin:0.5rem 0;
-        border-left:4px solid #667eea;
+        background: #f8f9fa; border-radius: 10px;
+        padding: 1rem; margin: 0.5rem 0;
+        border-left: 4px solid #667eea;
     }
-    .strength-item { color:#27ae60; }
-    .improve-item  { color:#e67e22; }
-    .tip-high      { color:#e74c3c; }
-    .tip-med       { color:#f39c12; }
-    .tip-low       { color:#27ae60; }
-    .cert-box      {
-        border-radius:20px; padding:2rem;
-        text-align:center; margin:1rem 0;
-    }
+    .strength-item { color: #27ae60; }
+    .improve-item  { color: #e67e22; }
+    .tip-high      { color: #e74c3c; }
+    .tip-med       { color: #f39c12; }
+    .tip-low       { color: #27ae60; }
+    .cert-box      { border-radius: 20px; padding: 2rem;
+                       text-align: center; margin: 1rem 0; }
     .rec-badge {
-        display:inline-block; padding:0.5rem 1.5rem;
-        border-radius:25px; font-size:1.2rem;
-        font-weight:bold; color:white;
+        display: inline-block; padding: 0.5rem 1.5rem;
+        border-radius: 25px; font-size: 1.2rem;
+        font-weight: bold; color: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Constants ─────────────────────────────────────────
 MODELS_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'models')
 
-FACE_EMOTIONS = {
-    0:'angry',1:'disgust',2:'fear',3:'happy',
-    4:'neutral',5:'sad',6:'surprise'}
-AUDIO_EMOTIONS = {
-    '0':'angry','1':'disgust','2':'fearful',
-    '3':'happy','4':'neutral','5':'sad'}
-FACE_TO_DIM = {
-    'angry':2,'disgust':2,'fear':2,'happy':1,
-    'neutral':4,'sad':2,'surprise':3}
-AUDIO_TO_DIM = {
-    'angry':2,'disgust':2,'fearful':2,
-    'happy':1,'neutral':4,'sad':2}
-TEXT_TO_DIM = {
-    'angry':2,'anxious':2,'positive':1,'surprised':3}
+FACE_EMOTIONS  = {0:'angry',1:'disgust',2:'fear',3:'happy',
+                   4:'neutral',5:'sad',6:'surprise'}
+AUDIO_EMOTIONS = {'0':'angry','1':'disgust','2':'fearful',
+                   '3':'happy','4':'neutral','5':'sad'}
+FACE_TO_DIM  = {'angry':2,'disgust':2,'fear':2,'happy':1,
+                 'neutral':4,'sad':2,'surprise':3}
+AUDIO_TO_DIM = {'angry':2,'disgust':2,'fearful':2,'happy':1,
+                 'neutral':4,'sad':2}
+TEXT_TO_DIM  = {'angry':2,'anxious':2,'positive':1,'surprised':3}
 
-FILLER_WORDS = [
-    'um','uh','like','so','you know','basically',
-    'literally','actually','i mean','right','okay so']
+FILLER_WORDS = ['um','uh','like','so','you know','basically',
+                 'literally','actually','i mean','right','okay so']
 
-# Maximum possible raw score from weighted skills
-# Used for normalization instead of hard cap
-TECHNICAL_SKILLS = {
-    'python':10,'java':10,'c++':10,'c':5,
-    'sql':8,'database':8,'docker':10,
-    'kubernetes':10,'machine learning':12,
-    'deep learning':12,'tensorflow':10,
-    'pytorch':10,'opencv':8,'git':8,
-    'github':8,'api':8,'web development':10,
-    'project':12,'internship':12,'streamlit':8,
-    'algorithm':8,'data structure':8,'cloud':8,
-    'aws':10,'flask':8,'django':8,'nlp':10,
-    'neural network':10,'research':8,
-    'developed':6,'implemented':6,'designed':6}
-
-TECH_MAX_SCORE = sum(TECHNICAL_SKILLS.values())
-
-INTRO_PATTERNS = [
-    'my name is','i am from','i am pursuing',
-    'i am doing','my hobbies','my strengths',
-    'thank you for allowing me',
-    'tell me about yourself',
-    'introduce myself','i completed my',
-    'i am currently','i have done my',
-    'i belong to','i was born']
+SKILL_KEYWORDS = {
+    'technical': [
+        'python','java','sql','machine learning',
+        'deep learning','api','algorithm','tensorflow',
+        'pytorch','docker','cloud','database','code',
+        'software','system','data','model','trained',
+        'built','developed','programming'],
+    'leadership': [
+        'led','managed','team','initiative','ownership',
+        'mentored','coordinated','supervised','organized',
+        'directed','handled','responsible','in charge',
+        'head','guide','delegate','lead'],
+    'problem_solving': [
+        'solved','debugged','optimized','improved',
+        'analyzed','designed','implemented','resolved',
+        'fixed','approach','solution','challenge',
+        'issue','problem','tackle','overcome','identify',
+        'diagnose','worked on','figured out','addressed'],
+    'communication': [
+        'presented','explained','collaborated',
+        'discussed','communicated','reported','told',
+        'shared','informed','conveyed','worked with',
+        'talked','meeting','spoke','described',
+        'mentioned','expressed','interact'],
+    'star_method': [
+        'situation','task','action','result',
+        'challenge','achieved','delivered','outcome',
+        'background','context','responsible','goal',
+        'objective','approach','decided','did','what i did',
+        'as a result','led to','because of','therefore',
+        'consequently','in the end','ultimately']}
 
 STAR_COMPONENTS = {
     'situation': [
         'situation','context','background',
         'at the time','when i was','we were',
-        'there was','i was working',
-        'in my previous','in my role',
-        'during','at that time'],
+        'there was','i was working','in my previous',
+        'in my role','during','at that time'],
     'task': [
         'task','responsible','goal','objective',
-        'assigned','my job','i had to',
-        'i needed to','my role was',
-        'i was asked','required to'],
+        'assigned','my job','i had to','i needed to',
+        'my role was','i was asked','required to',
+        'needed to','i was given'],
     'action': [
         'action','implemented','did','approach',
-        'i decided','i analyzed','i built',
-        'i designed','i created','i developed',
-        'i worked','i wrote','i fixed',
-        'i solved','i set up','i used',
-        'so i','what i did','my approach'],
+        'i decided','i analyzed','i built','i designed',
+        'i created','i developed','i worked','i wrote',
+        'i fixed','i solved','i set up','i used',
+        'i started','i began','so i','what i did',
+        'my approach','i chose','i applied'],
     'result': [
         'result','outcome','achieved','improved',
-        'increased','decreased','delivered',
-        'led to','as a result','consequently',
-        'therefore','this helped','we succeeded',
+        'increased','decreased','delivered','led to',
+        'as a result','consequently','therefore',
+        'this helped','we managed','we succeeded',
         'successfully','in the end','ultimately',
-        'percent','reduced','saved','completed']}
+        'the impact','percent','reduced','saved',
+        'completed','finished']}
 
 
 # ═══════════════════════════════════════════════════════
@@ -170,26 +177,26 @@ STAR_COMPONENTS = {
 def load_models():
     models = {}
     try:
-        fp = os.path.join(MODELS_DIR,'face_model_best.keras')
-        if not os.path.exists(fp):
-            fp = os.path.join(MODELS_DIR,'face_model_best.h5')
-        models['face'] = tf.keras.models.load_model(fp)
+        face_path = os.path.join(MODELS_DIR, 'face_model_best.keras')
+        if not os.path.exists(face_path):
+            face_path = os.path.join(MODELS_DIR, 'face_model_best.h5')
+        models['face'] = tf.keras.models.load_model(face_path)
         st.sidebar.success("✅ Face model loaded")
     except Exception as e:
         st.sidebar.error(f"❌ Face: {e}")
         models['face'] = None
 
     try:
-        models['audio'] = tf.keras.models.load_model(
-            os.path.join(MODELS_DIR,'audio_model_best.keras'))
+        audio_path = os.path.join(MODELS_DIR, 'audio_model_best.keras')
+        models['audio'] = tf.keras.models.load_model(audio_path)
         st.sidebar.success("✅ Audio model loaded")
     except Exception as e:
         st.sidebar.error(f"❌ Audio: {e}")
         models['audio'] = None
 
     try:
-        models['fusion'] = tf.keras.models.load_model(
-            os.path.join(MODELS_DIR,'fusion_model_best.keras'))
+        fusion_path = os.path.join(MODELS_DIR, 'fusion_model_best.keras')
+        models['fusion'] = tf.keras.models.load_model(fusion_path)
         st.sidebar.success("✅ Fusion model loaded")
     except Exception as e:
         st.sidebar.error(f"❌ Fusion: {e}")
@@ -197,21 +204,16 @@ def load_models():
 
     try:
         from transformers import (
-            AutoTokenizer,
-            AutoModelForSequenceClassification)
-        rp = os.path.join(MODELS_DIR,'final_roberta_model')
-        models['roberta_tok'] = \
-            AutoTokenizer.from_pretrained(
-                rp, local_files_only=True)
-        models['roberta'] = \
-            AutoModelForSequenceClassification\
-            .from_pretrained(rp, local_files_only=True)
+            AutoTokenizer, AutoModelForSequenceClassification)
+        roberta_path = os.path.join(MODELS_DIR, 'final_roberta_model')
+        models['roberta_tok'] = AutoTokenizer.from_pretrained(
+            roberta_path, local_files_only=True)
+        models['roberta'] = AutoModelForSequenceClassification\
+            .from_pretrained(roberta_path, local_files_only=True)
         models['roberta'].eval()
-        with open(os.path.join(
-                rp,'emotion_map.json')) as f:
+        with open(os.path.join(roberta_path, 'emotion_map.json')) as f:
             emotion2id = json.load(f)
-        models['id2emotion'] = {
-            v:k for k,v in emotion2id.items()}
+        models['id2emotion'] = {v: k for k, v in emotion2id.items()}
         st.sidebar.success("✅ Text model loaded")
     except Exception as e:
         st.sidebar.error(f"❌ Text: {e}")
@@ -221,229 +223,152 @@ def load_models():
 
 
 def video_to_wav(video_path, target_sr=16000):
-    """Convert video to WAV, returns None gracefully
-    if ffmpeg is missing (Streamlit Cloud safe)."""
-    if shutil.which("ffmpeg") is None:
-        st.warning(
-            "⚠️ FFmpeg not found. "
-            "Audio/voice analysis skipped.")
-        return None
-    wav_path = video_path + "_conv.wav"
+    wav_path = video_path + "_converted.wav"
     subprocess.run([
-        'ffmpeg','-i',video_path,
-        '-vn','-ac','1',
-        '-ar',str(target_sr),
-        wav_path,'-y','-loglevel','quiet'],
+        'ffmpeg', '-i', video_path, '-vn', '-ac', '1',
+        '-ar', str(target_sr), wav_path, '-y', '-loglevel', 'quiet'],
         capture_output=True)
-    return wav_path if os.path.exists(wav_path) \
-        else None
+    return wav_path if os.path.exists(wav_path) else None
 
 
 # ═══════════════════════════════════════════════════════
-# FACE ANALYSIS
+# PRIORITY 1 — AUDIO MODULE REWRITE
+#
+# Replaces RMS/ZCR proxies with:
+#  - WebRTC VAD for real voiced/silence segmentation
+#  - Pause ratio, average pause duration, silence %
+#  - Praat/Parselmouth for pitch (more robust than
+#    librosa.piptrack on conversational speech)
+#  - Loudness variation from RMS envelope
+#  - CNN emotion model used ONLY as a minor signal,
+#    never displayed as a label
 # ═══════════════════════════════════════════════════════
 
-def analyze_face_from_video(video_path, face_model,
-                              sample_every=15,
-                              min_confidence=0.80,
-                              decisive_margin=0.35):
-    import cv2
-    if face_model is None:
-        return None
-    try:
-        cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades +
-            'haarcascade_frontalface_default.xml')
-        ish = face_model.input_shape
-        img_size, n_ch = ish[1], ish[-1]
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            return None
+def run_vad(y, sr, frame_ms=30, energy_percentile=30):
+    """
+    Energy-threshold VAD (no external C-extension needed).
+    Splits audio into fixed frames and marks each as
+    voiced/unvoiced based on RMS energy relative to the
+    signal's own energy distribution. Less precise than
+    WebRTC's algorithm, but avoids the Visual C++ Build
+    Tools dependency, and is adequate for pause-ratio /
+    silence-percentage estimation in this context.
+    """
+    frame_len = int(sr * frame_ms / 1000)
+    if frame_len <= 0 or len(y) < frame_len:
+        return [], frame_ms / 1000
 
-        all_preds = []
-        face_found = 0
-        smile_frames = 0
-        frame_idx = 0
-        total_sampled = 0
+    n_frames = len(y) // frame_len
+    frame_energies = []
+    for i in range(n_frames):
+        frame = y[i*frame_len:(i+1)*frame_len]
+        frame_energies.append(float(np.sqrt(np.mean(frame**2))))
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % sample_every == 0:
-                total_sampled += 1
-                gray = cv2.cvtColor(
-                    frame, cv2.COLOR_BGR2GRAY)
-                faces = cascade.detectMultiScale(
-                    gray, 1.2, 5, minSize=(60,60))
-                if len(faces) > 0:
-                    face_found += 1
-                    x,y,w,h = max(
-                        faces,
-                        key=lambda f: f[2]*f[3])
-                    crop = frame[y:y+h, x:x+w]
-                    resized = cv2.resize(
-                        crop,(img_size,img_size))
-                    if n_ch == 3:
-                        img_arr = cv2.cvtColor(
-                            resized,
-                            cv2.COLOR_BGR2RGB)
-                    else:
-                        img_arr = cv2.cvtColor(
-                            resized,
-                            cv2.COLOR_BGR2GRAY)
-                        img_arr = np.expand_dims(
-                            img_arr,-1)
-                    arr = np.expand_dims(
-                        img_arr.astype(
-                            np.float32)/255.0, 0)
-                    probs = face_model.predict(
-                        arr, verbose=0)[0]
-                    pred = int(np.argmax(probs))
-                    conf = float(probs[pred])
-                    all_preds.append(
-                        (pred, conf, probs))
-                    if pred == 3:
-                        smile_frames += 1
-            frame_idx += 1
-        cap.release()
+    frame_energies = np.array(frame_energies)
+    if len(frame_energies) == 0:
+        return [], frame_ms / 1000
 
-        if not all_preds:
-            return None
+    # Threshold set relative to this clip's own energy
+    # distribution, since absolute RMS varies a lot by
+    # mic/recording setup
+    threshold = np.percentile(frame_energies, energy_percentile)
+    threshold = max(threshold, 1e-4)  # floor to avoid pure-silence clips
+    voiced_flags = [bool(e > threshold) for e in frame_energies]
 
-        camera_pct = round(
-            100*face_found/max(total_sampled,1),1)
-        smile_pct = round(
-            100*smile_frames/max(len(all_preds),1),1)
-        confident = [p for p in all_preds
-                     if p[1] >= min_confidence]
-        usable = confident if confident else all_preds
-        vc = Counter(p[0] for p in usable)
-        ranked = vc.most_common()
-        wc = ranked[0][0]
-        wv = ranked[0][1]
-        ru = ranked[1][1] if len(ranked)>1 else 0
-        margin = (wv-ru)/len(usable)
-        is_decisive = margin >= decisive_margin
-        matching = [p[2] for p in usable
-                    if p[0]==wc]
-        avg_probs = np.mean(matching, axis=0)
-        consistency = round(100*wv/len(usable),1)
-        raw_em = FACE_EMOTIONS.get(wc,'neutral')
-
-        if is_decisive and raw_em=='happy':
-            display_label = "Positive / engaged"
-        elif is_decisive and raw_em=='surprise':
-            display_label = "Alert / responsive"
-        else:
-            display_label = "Neutral / composed"
-
-        return {
-            'display_label'      : display_label,
-            'raw_emotion'        : raw_em,
-            'is_decisive'        : is_decisive,
-            'confidence'         : float(avg_probs[wc]),
-            'camera_presence_pct': camera_pct,
-            'smile_pct'          : smile_pct,
-            'consistency'        : consistency,
-            'probs'              : avg_probs.tolist(),
-            'dim'                : FACE_TO_DIM.get(
-                raw_em if is_decisive else 'neutral',4),
-            'frames_analyzed'    : len(all_preds),
-            'frames_used'        : len(usable)}
-
-    except Exception as e:
-        st.warning(f"Face analysis error: {e}")
-        return None
-
-
-# ═══════════════════════════════════════════════════════
-# AUDIO ANALYSIS
-# ═══════════════════════════════════════════════════════
-
-def run_vad(y, sr, frame_ms=30,
-             energy_percentile=30):
-    frame_len = int(sr*frame_ms/1000)
-    if frame_len<=0 or len(y)<frame_len:
-        return [], frame_ms/1000
-    n = len(y)//frame_len
-    energies = np.array([
-        float(np.sqrt(np.mean(
-            y[i*frame_len:(i+1)*frame_len]**2)))
-        for i in range(n)])
-    if len(energies)==0:
-        return [], frame_ms/1000
-    threshold = max(
-        np.percentile(energies,energy_percentile),
-        1e-4)
-    return ([bool(e>threshold)
-              for e in energies],
-            frame_ms/1000)
+    return voiced_flags, frame_ms / 1000
 
 
 def compute_pause_metrics(voiced_flags, frame_dur):
+    """
+    From a voiced/unvoiced frame sequence, computes:
+      - silence_pct: % of total time that is non-speech
+      - pause_count: number of distinct silence gaps
+        between speech segments (not leading/trailing silence)
+      - avg_pause_duration: mean length of those gaps (sec)
+      - pause_ratio: pause time / total speaking+pause time
+    """
     if not voiced_flags:
-        return {'silence_pct':0,'pause_count':0,
-                'avg_pause_duration':0,
-                'pause_ratio':0}
-    total = len(voiced_flags)
-    silent = sum(1 for v in voiced_flags if not v)
-    silence_pct = round(100*silent/total,1)
-    first_v = next(
-        (i for i,v in enumerate(voiced_flags)
-         if v), None)
-    last_v = next(
-        (i for i in range(total-1,-1,-1)
+        return {'silence_pct': 0, 'pause_count': 0,
+                'avg_pause_duration': 0, 'pause_ratio': 0}
+
+    total_frames = len(voiced_flags)
+    silent_frames = sum(1 for v in voiced_flags if not v)
+    silence_pct = round(100 * silent_frames / total_frames, 1)
+
+    # Find pauses that occur BETWEEN speech (not at the very
+    # start/end, which is just lead-in/lead-out silence)
+    first_voice = next((i for i, v in enumerate(voiced_flags) if v), None)
+    last_voice = next(
+        (i for i in range(total_frames - 1, -1, -1)
          if voiced_flags[i]), None)
+
     pauses = []
-    if first_v is not None and \
-            last_v is not None:
-        cur = 0
-        for i in range(first_v, last_v+1):
+    if first_voice is not None and last_voice is not None:
+        current_pause = 0
+        for i in range(first_voice, last_voice + 1):
             if not voiced_flags[i]:
-                cur += 1
+                current_pause += 1
             else:
-                if cur >= 3:
-                    pauses.append(cur*frame_dur)
-                cur = 0
+                if current_pause >= 3:  # ignore tiny gaps (<90ms)
+                    pauses.append(current_pause * frame_dur)
+                current_pause = 0
+
+    pause_count = len(pauses)
+    avg_pause_duration = round(
+        float(np.mean(pauses)), 2) if pauses else 0.0
+    speaking_frames = total_frames - silent_frames
+    pause_ratio = round(
+        silent_frames / max(total_frames, 1), 3)
+
     return {
-        'silence_pct'       : silence_pct,
-        'pause_count'       : len(pauses),
-        'avg_pause_duration': round(
-            float(np.mean(pauses)),2)
-            if pauses else 0.0,
-        'pause_ratio'       : round(
-            silent/max(total,1),3)}
+        'silence_pct'        : silence_pct,
+        'pause_count'        : pause_count,
+        'avg_pause_duration' : avg_pause_duration,
+        'pause_ratio'        : pause_ratio}
 
 
 def estimate_pitch_praat(wav_path):
+    """
+    Uses Parselmouth (Praat) for pitch tracking — more
+    robust on natural conversational speech than
+    librosa.piptrack, which is tuned for musical pitch.
+    """
     try:
         import parselmouth
         snd = parselmouth.Sound(wav_path)
         pitch = snd.to_pitch()
-        pv = pitch.selected_array['frequency']
-        pv = pv[pv>0]
-        if len(pv)<10:
-            return {'pitch_mean':0,'pitch_std':0,
-                     'pitch_stability':50.0}
-        pm = float(np.mean(pv))
-        ps = float(np.std(pv))
+        pitch_values = pitch.selected_array['frequency']
+        pitch_values = pitch_values[pitch_values > 0]  # remove unvoiced
+
+        if len(pitch_values) < 10:
+            return {'pitch_mean': 0, 'pitch_std': 0,
+                     'pitch_stability': 50.0}
+
+        pitch_mean = float(np.mean(pitch_values))
+        pitch_std = float(np.std(pitch_values))
+        pitch_stability = max(0, min(100,
+            100 * (1 - pitch_std / (pitch_mean + 1e-6))))
+
         return {
-            'pitch_mean'     : round(pm,1),
-            'pitch_std'      : round(ps,1),
-            'pitch_stability': round(
-                max(0,min(100,
-                    100*(1-ps/(pm+1e-6)))),1)}
-    except Exception:
-        return {'pitch_mean':0,'pitch_std':0,
-                 'pitch_stability':50.0}
+            'pitch_mean': round(pitch_mean, 1),
+            'pitch_std' : round(pitch_std, 1),
+            'pitch_stability': round(pitch_stability, 1)}
+    except Exception as e:
+        return {'pitch_mean': 0, 'pitch_std': 0,
+                 'pitch_stability': 50.0, 'error': str(e)}
 
 
-def analyze_audio_from_video(
-        video_path, audio_model,
-        transcript_word_count=None,
-        min_confidence=0.65,
-        decisive_margin=0.25):
+def analyze_audio_from_video(video_path, audio_model,
+                               transcript_word_count=None,
+                               min_confidence=0.65,
+                               decisive_margin=0.25):
+    """
+    Returns interview-relevant vocal metrics. No emotion
+    label is ever surfaced — only: Voice Stability,
+    Speaking Pace, Pause Control, Confidence (acoustic),
+    Vocal Tone (calm/energetic/nervous — derived from
+    stability+loudness, gated by CNN only as a minor signal).
+    """
     import librosa
 
     wav_path = video_to_wav(video_path)
@@ -451,41 +376,33 @@ def analyze_audio_from_video(
         return None
 
     try:
-        y, sr = librosa.load(
-            wav_path, sr=16000, mono=True)
-        duration_sec = len(y)/sr
-        if duration_sec < 5:
-          os.unlink(wav_path)
-          return {
-        "vocal_tone":"Too Short",
-        "confidence":0.0,
-        "cnn_label":None,
-        "cnn_decisive":False
-          }
+        y, sr = librosa.load(wav_path, sr=16000, mono=True)
+        duration_sec = len(y) / sr
+
         if duration_sec < 1.0:
             os.unlink(wav_path)
             return None
 
+        # ── Voice Activity Detection ────────────────
         voiced_flags, frame_dur = run_vad(y, sr)
-        pause_metrics = compute_pause_metrics(
-            voiced_flags, frame_dur)
+        pause_metrics = compute_pause_metrics(voiced_flags, frame_dur)
+
+        # ── Pitch via Praat ──────────────────────────
         pitch_metrics = estimate_pitch_praat(wav_path)
 
+        # ── Loudness variation (RMS envelope) ───────
         rms = librosa.feature.rms(y=y)[0]
         rms_mean = float(np.mean(rms))
-        rms_std  = float(np.std(rms))
-        energy_stability = max(0,min(100,
-            100*(1-rms_std/(rms_mean+1e-6))))
+        rms_std = float(np.std(rms))
         loudness_variation = round(
-            100*rms_std/(rms_mean+1e-6),1)
+            100 * rms_std / (rms_mean + 1e-6), 1)
+        energy_stability = max(0, min(100,
+            100 * (1 - rms_std / (rms_mean + 1e-6))))
 
-        speaking_sec = duration_sec*(
-            1-pause_metrics['pause_ratio'])
-        if transcript_word_count and \
-                speaking_sec > 0:
-            wpm = round(
-                transcript_word_count/
-                (speaking_sec/60),0)
+        # ── Speaking rate from Whisper word count ───
+        speaking_sec = duration_sec * (1 - pause_metrics['pause_ratio'])
+        if transcript_word_count and speaking_sec > 0:
+            wpm = round(transcript_word_count / (speaking_sec / 60), 0)
         else:
             wpm = None
 
@@ -498,164 +415,235 @@ def analyze_audio_from_video(
         else:
             pace_label = "Good pace"
 
-        pitch_stability = \
-            pitch_metrics['pitch_stability']
+        # ── Gated CNN check (minor signal only) ─────
         cnn_label, cnn_decisive = None, False
-
         if audio_model is not None:
             from PIL import Image as PILImage
-            ish = audio_model.input_shape
-            ih,iw,ich = ish[1],ish[2],ish[-1]
-            win_len = sr*3
-            all_preds = []
-            for start in range(
-                    0,len(y)-win_len,win_len):
-                chunk = y[start:start+win_len]
-                mel = librosa.feature\
-                    .melspectrogram(
-                        y=chunk,sr=sr,
-                        n_mels=ih,n_fft=2048,
-                        hop_length=512)
-                mel_db = librosa.power_to_db(
-                    mel,ref=np.max)
+            input_shape = audio_model.input_shape
+            img_h, img_w = input_shape[1], input_shape[2]
+            n_channels = input_shape[-1]
+            win_len = sr * 3
+            all_predictions = []
+
+            for start in range(0, len(y) - win_len, win_len):
+                chunk = y[start:start + win_len]
+                mel = librosa.feature.melspectrogram(
+                    y=chunk, sr=sr, n_mels=img_h,
+                    n_fft=2048, hop_length=512)
+                mel_db = librosa.power_to_db(mel, ref=np.max)
                 mel_img = np.array(
-                    PILImage.fromarray(
-                        mel_db).resize((iw,ih)))
-                mn,mx = (mel_img.min(),
-                          mel_img.max())
-                if mx-mn < 1e-8:
+                    PILImage.fromarray(mel_db).resize((img_w, img_h)))
+                mn, mx = mel_img.min(), mel_img.max()
+                if mx - mn < 1e-8:
                     continue
-                mel_norm = (mel_img-mn)/(mx-mn)
-                arr = (
-                    np.repeat(
-                        mel_norm[...,None],3,
-                        axis=-1)
-                    if ich==3
-                    else mel_norm[...,None])
-                arr = np.expand_dims(
-                    arr.astype(np.float32),0)
-                probs = audio_model.predict(
-                    arr,verbose=0)[0]
+                mel_norm = (mel_img - mn) / (mx - mn)
+                arr = (np.repeat(mel_norm[..., None], 3, axis=-1)
+                       if n_channels == 3 else mel_norm[..., None])
+                arr = np.expand_dims(arr.astype(np.float32), 0)
+                probs = audio_model.predict(arr, verbose=0)[0]
                 pred = int(np.argmax(probs))
                 conf = float(probs[pred])
-                all_preds.append(
-                    (pred,conf,probs))
+                all_predictions.append((pred, conf, probs))
 
-            if all_preds:
-                avg_conf = np.mean([p[1] for p in all_preds])
-                if avg_conf < 0.70:
-                    cnn_label = None
-                    cnn_decisive = False
-                confident = [
-                    p for p in all_preds
-                    if p[1]>=min_confidence]
-                usable = (confident
-                           if confident
-                           else all_preds)
-                vc = Counter(
-                    p[0] for p in usable)
-                ranked = vc.most_common()
-                wc = ranked[0][0]
-                wv = ranked[0][1]
-                ru = (ranked[1][1]
-                       if len(ranked)>1 else 0)
-                margin = (wv-ru)/len(usable)
-                cnn_decisive = (
-                    margin>=decisive_margin and
-                    len(confident)>=3)
+            if all_predictions:
+                confident = [p for p in all_predictions
+                             if p[1] >= min_confidence]
+                usable = confident if confident else all_predictions
+                vote_counts = Counter(p[0] for p in usable)
+                ranked = vote_counts.most_common()
+                winning_class = ranked[0][0]
+                winning_votes = ranked[0][1]
+                runner_up = ranked[1][1] if len(ranked) > 1 else 0
+                margin = (winning_votes - runner_up) / len(usable)
+                cnn_decisive = (margin >= decisive_margin and
+                                 len(confident) >= 3)
                 if cnn_decisive:
-                    label_counts = Counter(
-    AUDIO_EMOTIONS.get(str(p[0]),"neutral")
-    for p in usable)
-                    cnn_label = label_counts.most_common(1)[0][0]
+                    cnn_label = AUDIO_EMOTIONS.get(
+                        str(winning_class), 'neutral')
 
         os.unlink(wav_path)
 
-        if (energy_stability > 70 and
-    pitch_stability > 65 and
-    pause_metrics["pause_ratio"] < 0.25):
+        # ── Derive interview-facing labels ──────────
+        pitch_stability = pitch_metrics['pitch_stability']
+
+        if energy_stability > 65 and pitch_stability > 55:
             vocal_tone = "Calm and steady"
-        elif energy_stability>50 and \
-                pause_metrics['pause_ratio']<0.35:
+        elif energy_stability > 50 and pause_metrics['pause_ratio'] < 0.35:
             vocal_tone = "Confident"
-        elif energy_stability<35 or \
-                pause_metrics['pause_count']>8:
+        elif energy_stability < 35 or pause_metrics['pause_count'] > 8:
             vocal_tone = "Slightly nervous"
         else:
             vocal_tone = "Neutral"
 
-        if cnn_decisive and \
-                cnn_label in ('fearful','sad') \
-                and energy_stability<50:
+        # CNN only nudges, never overrides acoustic evidence
+        if cnn_decisive and cnn_label in ('fearful', 'sad') and \
+                energy_stability < 50:
             vocal_tone = "Slightly nervous"
-        elif cnn_decisive and \
-                cnn_label=='happy' and \
-                energy_stability>55:
+        elif cnn_decisive and cnn_label == 'happy' and \
+                energy_stability > 55:
             vocal_tone = "Energetic and confident"
 
-        if pause_metrics['pause_count']==0:
-            pause_control = "Excellent"
-        elif pause_metrics[
-                'avg_pause_duration']<1.0:
-            pause_control = "Good"
-        elif pause_metrics[
-                'avg_pause_duration']<2.5:
-            pause_control = "Fair"
+        if pause_metrics['pause_count'] == 0:
+            pause_control = "Excellent — no awkward pauses"
+        elif pause_metrics['avg_pause_duration'] < 1.0:
+            pause_control = "Good — brief natural pauses"
+        elif pause_metrics['avg_pause_duration'] < 2.5:
+            pause_control = "Fair — some hesitation"
         else:
-            pause_control = "Needs work"
+            pause_control = "Needs work — long pauses detected"
 
         voice_stability = round(
-            (energy_stability+pitch_stability)/2,1)
-        audio_conf = max(0.4,min(0.95,
-            1-abs(energy_stability-
-                   pitch_stability)/200))
+            (energy_stability + pitch_stability) / 2, 1)
+
+        acoustic_confidence = max(0.4, min(0.95,
+            1 - abs(energy_stability - pitch_stability) / 200))
 
         return {
             'vocal_tone'        : vocal_tone,
             'voice_stability'   : voice_stability,
-            'energy_stability'  : round(
-                energy_stability,1),
+            'energy_stability'  : round(energy_stability, 1),
             'pitch_stability'   : pitch_stability,
-            'pitch_mean'        : pitch_metrics[
-                'pitch_mean'],
+            'pitch_mean'        : pitch_metrics['pitch_mean'],
             'loudness_variation': loudness_variation,
             'pace_label'        : pace_label,
             'words_per_minute'  : wpm,
-            'silence_pct'       : pause_metrics[
-                'silence_pct'],
-            'pause_count'       : pause_metrics[
-                'pause_count'],
-            'avg_pause_duration': pause_metrics[
-                'avg_pause_duration'],
-            'pause_ratio'       : pause_metrics[
-                'pause_ratio'],
+            'silence_pct'       : pause_metrics['silence_pct'],
+            'pause_count'       : pause_metrics['pause_count'],
+            'avg_pause_duration': pause_metrics['avg_pause_duration'],
+            'pause_ratio'       : pause_metrics['pause_ratio'],
             'pause_control'     : pause_control,
-            'confidence'        : audio_conf,
+            'confidence'        : acoustic_confidence,
             'probs'             : [0.14]*6,
             'dim'               : (
-                1 if vocal_tone in (
-                    "Confident",
-                    "Energetic and confident")
-                else 2 if vocal_tone==
-                    "Slightly nervous"
-                else 4),
+                1 if vocal_tone in ("Confident","Energetic and confident")
+                else 2 if vocal_tone == "Slightly nervous" else 4),
             'cnn_label'         : cnn_label,
             'cnn_decisive'      : cnn_decisive}
 
     except Exception as e:
-        import traceback
         if os.path.exists(wav_path):
-            try: os.unlink(wav_path)
+            try:
+                os.unlink(wav_path)
             except Exception:
                 pass
-
-        st.error(f"Audio analysis error: {e}")
-        st.code(traceback.format_exc())
+        st.warning(f"Audio analysis error: {e}")
         return None
 
 
 # ═══════════════════════════════════════════════════════
-# SPEECH QUALITY
+# FACE ANALYSIS — "Camera Presence" naming, same
+# majority-vote gating as before (this part was already
+# validated against your debug logs)
+# ═══════════════════════════════════════════════════════
+
+def analyze_face_from_video(video_path, face_model,
+                              sample_every=15,
+                              min_confidence=0.65,
+                              decisive_margin=0.20):
+    import cv2
+
+    if face_model is None:
+        return None
+
+    try:
+        cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades +
+            'haarcascade_frontalface_default.xml')
+
+        input_shape = face_model.input_shape
+        img_size, n_channels = input_shape[1], input_shape[-1]
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+
+        all_predictions = []
+        face_found_count = 0
+        smile_frames = 0
+        frame_idx = 0
+        total_sampled = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % sample_every == 0:
+                total_sampled += 1
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = cascade.detectMultiScale(
+                    gray, scaleFactor=1.2, minNeighbors=5,
+                    minSize=(60, 60))
+                if len(faces) > 0:
+                    face_found_count += 1
+                    x, y, w, h = max(faces, key=lambda f: f[2]*f[3])
+                    crop = frame[y:y+h, x:x+w]
+                    resized = cv2.resize(crop, (img_size, img_size))
+                    if n_channels == 3:
+                        img_arr = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                    else:
+                        img_arr = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+                        img_arr = np.expand_dims(img_arr, -1)
+                    arr = np.expand_dims(img_arr.astype(np.float32)/255.0, 0)
+                    probs = face_model.predict(arr, verbose=0)[0]
+                    pred = int(np.argmax(probs))
+                    conf = float(probs[pred])
+                    all_predictions.append((pred, conf, probs))
+                    if pred == 3:
+                        smile_frames += 1
+            frame_idx += 1
+        cap.release()
+
+        if not all_predictions:
+            return None
+
+        camera_presence_pct = round(
+            100 * face_found_count / max(total_sampled, 1), 1)
+        smile_pct = round(
+            100 * smile_frames / max(len(all_predictions), 1), 1)
+
+        confident = [p for p in all_predictions if p[1] >= min_confidence]
+        usable = confident if confident else all_predictions
+        vote_counts = Counter(p[0] for p in usable)
+        ranked = vote_counts.most_common()
+        winning_class = ranked[0][0]
+        winning_votes = ranked[0][1]
+        runner_up_votes = ranked[1][1] if len(ranked) > 1 else 0
+        margin = (winning_votes - runner_up_votes) / len(usable)
+        is_decisive = margin >= decisive_margin
+
+        matching = [p[2] for p in usable if p[0] == winning_class]
+        avg_probs = np.mean(matching, axis=0)
+        consistency = round(100 * winning_votes / len(usable), 1)
+
+        raw_emotion = FACE_EMOTIONS.get(winning_class, 'neutral')
+        if is_decisive and raw_emotion == 'happy':
+            display_label = "Positive / engaged"
+        elif is_decisive and raw_emotion == 'surprise':
+            display_label = "Alert / responsive"
+        else:
+            display_label = "Neutral / composed"
+
+        return {
+            'display_label'      : display_label,
+            'raw_emotion'        : raw_emotion,
+            'is_decisive'        : is_decisive,
+            'confidence'         : float(avg_probs[winning_class]),
+            'camera_presence_pct': camera_presence_pct,
+            'smile_pct'          : smile_pct,
+            'consistency'        : consistency,
+            'probs'              : avg_probs.tolist(),
+            'dim'                : FACE_TO_DIM.get(
+                raw_emotion if is_decisive else 'neutral', 4),
+            'frames_analyzed'    : len(all_predictions),
+            'frames_used'        : len(usable)}
+
+    except Exception as e:
+        st.warning(f"Face analysis error: {e}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════
+# SPEECH / TRANSCRIPT METRICS
 # ═══════════════════════════════════════════════════════
 
 def analyze_speech_quality(text):
@@ -665,510 +653,468 @@ def analyze_speech_quality(text):
     total = len(words)
     if total == 0:
         return {}
-    fillers = sum(
-        len(re.findall(
-            r'\b'+re.escape(f)+r'\b',
-            text.lower()))
-        for f in FILLER_WORDS)
-    ttr = len(set(words))/total
-    sents = [s for s in
-             re.split(r'[.!?]+',text.strip())
-             if len(s.strip())>0]
-    avg_sent = round(total/max(len(sents),1),1)
-    wc = Counter(words)
-    repeated = [w for w,c in wc.items()
-                if c>3 and len(w)>3]
-    rep_pct = round(
-        sum(wc[w] for w in repeated)/
-        max(total,1)*100,1)
-    long_sents = sum(
-        1 for s in sents
-        if len(s.split())>40)
-    grammar_score = max(0,min(100,
-        100-long_sents*10-fillers/total*150))
-    filler_penalty = min(40, fillers/total*200)
-    rep_penalty = min(20, rep_pct*0.5)
-    sent_len_score = max(0,min(100,
-        100-max(0,avg_sent-20)*2-
-        max(0,10-avg_sent)*3))
 
-    communication_score = max(0,min(100,
-        grammar_score*0.35+
-        (100-filler_penalty)*0.30+
-        (100-rep_penalty)*0.15+
-        min(100,ttr*100)*0.20))
+    fillers = sum(
+        len(re.findall(r'\b' + re.escape(f) + r'\b', text.lower()))
+        for f in FILLER_WORDS)
+    ttr = len(set(words)) / total
+    sents = [s for s in re.split(r'[.!?]+', text.strip())
+             if len(s.strip()) > 0]
+    avg_sentence_len = round(total / max(len(sents), 1), 1)
+
+    word_counts = Counter(words)
+    repeated_words = [w for w, c in word_counts.items()
+                        if c > 3 and len(w) > 3]
+    repetition_pct = round(
+        sum(word_counts[w] for w in repeated_words) /
+        max(total, 1) * 100, 1)
+
+    # Rough grammar proxy: sentence-ending punctuation
+    # present, no run-on sentences over 40 words
+    long_sentences = sum(1 for s in sents if len(s.split()) > 40)
+    grammar_score = max(0, min(100,
+        100 - long_sentences * 10 - fillers/total*150))
 
     return {
-        'total_wortech_scoreds'        : total,
+        'total_words'        : total,
         'filler_count'       : fillers,
-        'filler_ratio'       : round(
-            fillers/total,3),
-        'vocabulary_richness': round(ttr,3),
-        'avg_sentence_length': avg_sent,
-        'repetition_pct'     : rep_pct,
-        'repeated_words'     : repeated[:5],
-        'grammar_score'      : round(
-            grammar_score,1),
+        'filler_ratio'       : round(fillers/total, 3),
+        'vocabulary_richness': round(ttr, 3),
+        'avg_sentence_length': avg_sentence_len,
+        'repetition_pct'     : repetition_pct,
+        'repeated_words'     : repeated_words[:5],
+        'grammar_score'      : round(grammar_score, 1),
         'clarity_score'      : round(
-            max(0,min(100,
-                (1-fillers/total*3)*100)),1),
+            max(0, min(100, (1 - fillers/total*3)*100)), 1),
         'fluency_score'      : round(
-            min(100,ttr*70+
-                min(avg_sent/20,1)*30),1),
-        'communication_score': round(
-            communication_score,1)}
-
-
-def is_introduction(text):
-    text_lower = text.lower()
-    return any(p in text_lower
-               for p in INTRO_PATTERNS)
+            min(100, ttr*70 + min(avg_sentence_len/20, 1)*30), 1)}
 
 
 def compute_star_completeness(text):
-    if is_introduction(text):
-        return {
-            'completeness'    : None,
-            'components_found': None,
-            'is_intro'        : True}
-    text_lower = text.lower()
-    found = {}
-    for comp, kws in STAR_COMPONENTS.items():
-        found[comp] = any(
-            re.search(
-                r'\b'+re.escape(kw)+r'\b',
-                text_lower)
-            for kw in kws)
-    completeness = round(
-        100*sum(found.values())/
-        len(STAR_COMPONENTS),1)
+
+    text = text.lower()
+
+    situation = any(x in text for x in [
+
+        "when i",
+
+        "during",
+
+        "at that time",
+
+        "in my project",
+
+        "in college",
+
+        "while working",
+
+        "my internship",
+
+        "our team"
+
+    ])
+
+    task = any(x in text for x in [
+
+        "my task",
+
+        "my responsibility",
+
+        "i had to",
+
+        "i needed to",
+
+        "my goal",
+
+        "objective",
+
+        "assigned"
+
+    ])
+
+    action = any(x in text for x in [
+
+        "i developed",
+
+        "i created",
+
+        "i built",
+
+        "i designed",
+
+        "i implemented",
+
+        "i solved",
+
+        "i worked",
+
+        "i used",
+
+        "i decided"
+
+    ])
+
+    result = any(x in text for x in [
+
+        "as a result",
+
+        "finally",
+
+        "successfully",
+
+        "improved",
+
+        "increased",
+
+        "reduced",
+
+        "completed",
+
+        "achieved",
+
+        "therefore",
+
+        "the result"
+
+    ])
+
+    components = {
+
+        "situation": situation,
+
+        "task": task,
+
+        "action": action,
+
+        "result": result
+
+    }
+
+    completeness = sum(components.values()) * 25
+
     return {
-        'completeness'    : completeness,
-        'components_found': found,
-        'is_intro'        : False}
 
+        "completeness": completeness,
 
-def compute_keyword_score(text):
-    text_lower = text.lower()
+        "components_found": components
 
-    # Weighted technical — normalized to max possible
-    tech_raw = 0
-    tech_found = []
-    for skill, weight in TECHNICAL_SKILLS.items():
-        if re.search(
-                r'\b'+re.escape(skill)+r'\b',
-                text_lower):
-            tech_raw += weight
-            tech_found.append(skill)
-    # Normalize against max possible score
-    # then scale by 0.8 to avoid inflated scores
-    tech_score = round(
-    min(100, (tech_raw / TECH_MAX_SCORE) * 100),
-    1)
-    tech_score = min(100, tech_score)
-
-    OTHER = {
-        'leadership': [
-            'led','managed','team','initiative',
-            'ownership','mentored','coordinated',
-            'supervised','organized','directed',
-            'handled','responsible','in charge',
-            'head','guide','delegate','lead'],
-        'problem_solving': [
-            'solved','debugged','optimized',
-            'improved','analyzed','designed',
-            'implemented','resolved','fixed',
-            'approach','solution','challenge',
-            'issue','problem','tackle','overcome',
-            'identify','diagnose','worked on',
-            'figured out','addressed'],
-        'communication': [
-            'presented','explained',
-            'collaborated','discussed',
-            'communicated','reported','told',
-            'shared','informed','conveyed',
-            'worked with','talked','meeting',
-            'spoke','described','mentioned',
-            'expressed','interact'],
-        'star_method': [
-            'situation','task','action',
-            'result','challenge','achieved',
-            'delivered','outcome','background',
-            'context','responsible','goal',
-            'objective','approach','decided',
-            'did','what i did','as a result',
-            'led to','because of','therefore',
-            'consequently','in the end',
-            'ultimately']}
-
-    scores = {
-        'technical': {
-            'score': round(tech_score,1),
-            'found': tech_found[:6]}}
-    for cat, kws in OTHER.items():
-        found = [k for k in kws
-                 if re.search(
-                     r'\b'+re.escape(k)+r'\b',
-                     text_lower)]
-        scores[cat] = {
-            'score': min(100,
-                len(found)/max(len(kws),1)*300),
-            'found': found[:4]}
-
-    scores['overall'] = round(np.mean([
-        v['score']
-        for v in scores.values()]),1)
-    return scores
+    }
 
 
 def predict_text_emotion(text, models):
     if not models.get('roberta'):
-        return {
-            'emotion'   :'positive',
-            'confidence':0.5,
-            'probs'     :[0.1,0.1,0.7,0.1],
-            'dim'       :1}
+        return {'emotion':'positive','confidence':0.5,
+                 'probs':[0.1,0.1,0.7,0.1],'dim':1}
     try:
         inp = models['roberta_tok'](
-            text, return_tensors='pt',
-            truncation=True,
+            text, return_tensors='pt', truncation=True,
             max_length=256, padding=True)
         with torch.no_grad():
             out = models['roberta'](**inp)
-            probs = torch.softmax(
-                out.logits,dim=1).numpy()[0]
+            probs = torch.softmax(out.logits, dim=1).numpy()[0]
         pred = np.argmax(probs)
         em = models['id2emotion'][pred]
-        return {
-            'emotion'   : em,
-            'confidence': float(probs[pred]),
-            'probs'     : probs.tolist(),
-            'dim'       : TEXT_TO_DIM.get(em,4)}
+        return {'emotion': em, 'confidence': float(probs[pred]),
+                 'probs': probs.tolist(), 'dim': TEXT_TO_DIM.get(em, 4)}
     except Exception:
-        return {
-            'emotion'   :'positive',
-            'confidence':0.5,
-            'probs'     :[0.1,0.1,0.7,0.1],
-            'dim'       :1}
+        return {'emotion':'positive','confidence':0.5,
+                 'probs':[0.1,0.1,0.7,0.1],'dim':1}
+
+
+def compute_keyword_score(text):
+    import re
+
+    text = text.lower()
+
+    categories = {
+        "technical": [
+            r"\bpython\b", r"\bjava\b", r"\bc\+\+\b", r"\bc\b",
+            r"\bmachine learning\b", r"\bdeep learning\b",
+            r"\bai\b", r"\bapi\b", r"\bdatabase\b",
+            r"\bsql\b", r"\bmodel\b", r"\bproject\b",
+            r"\bsoftware\b", r"\bapplication\b",
+            r"\bdevelop(ed|ing)?\b",
+            r"\bcreat(ed|ing)?\b",
+            r"\bbuild(s|ing|t)?\b",
+            r"\bdesign(ed|ing)?\b"
+        ],
+
+        "problem_solving": [
+            r"\bsolv(ed|e|ing)?\b",
+            r"\bfix(ed|ing)?\b",
+            r"\bdebug(ged|ging)?\b",
+            r"\bimprov(ed|ing)?\b",
+            r"\boptimiz(ed|ing)?\b",
+            r"\bimplement(ed|ing)?\b",
+            r"\bdevelop(ed|ing)?\b",
+            r"\bdesign(ed|ing)?\b",
+            r"\bcreat(ed|ing)?\b",
+            r"\bbuild(s|ing|t)?\b",
+            r"\bchallenge\b",
+            r"\bissue\b",
+            r"\bproblem\b",
+            r"\bsolution\b",
+            r"\bovercame\b",
+            r"\bhandled\b"
+        ],
+
+        "communication": [
+            r"\bexplain(ed|ing)?\b",
+            r"\bpresent(ed|ing)?\b",
+            r"\bcommunicat(ed|ing)?\b",
+            r"\bcollaborat(ed|ing)?\b",
+            r"\bdiscuss(ed|ing)?\b",
+            r"\bteam\b",
+            r"\bclient\b",
+            r"\bmentor\b",
+            r"\bmeeting\b",
+            r"\bshared\b",
+            r"\breported\b",
+            r"\bworked with\b",
+            r"\binteraction\b"
+        ]
+    }
+
+    scores = {}
+
+    for category, patterns in categories.items():
+
+        found = []
+
+        for pattern in patterns:
+
+            if re.search(pattern, text):
+                found.append(pattern)
+
+        score = min(100, (len(found) / len(patterns)) * 100)
+
+        scores[category] = {
+            "score": score,
+            "found": found
+        }
+
+    scores["overall"] = round(
+        sum(v["score"] for v in scores.values()) /
+        len(scores), 1
+    )
+
+    return scores
 
 
 # ═══════════════════════════════════════════════════════
-# SCORING — all fixes applied
+# PRIORITY — CONFIDENCE-WEIGHTED FUSION
+#
+# Instead of fixed text=50/face=35/audio=15, each
+# modality's contribution is weighted by its OWN
+# confidence reading for this specific sample, then
+# normalized. A modality that's uncertain on this clip
+# contributes less, regardless of its baseline reliability.
+# Base reliability priors still anchor the weighting so a
+# very confident audio reading can't outweigh text outright.
 # ═══════════════════════════════════════════════════════
 
-def compute_scores(text_r, face_r, audio_r,
-                    sq, star, kw):
-    # ── Communication: now includes filler,
-    # sentence length and repetition ──────────
-    communication = sq.get(
-        'communication_score', 50)
+def confidence_weighted_fusion(text_r, face_r, audio_r, sq, star, kw):
+    # Base reliability priors from validated model accuracy
+    BASE_TEXT, BASE_FACE, BASE_AUDIO = 0.55, 0.30, 0.15
 
-    # ── Professionalism ───────────────────────
-    professionalism = round(min(100,
-        (100-sq.get('repetition_pct',0)*2)*0.4+
-        sq.get('grammar_score',70)*0.3+
-        communication*0.3),1)
+    text_conf = text_r['confidence']
+    face_conf = face_r['confidence'] if face_r['is_decisive'] else 0.4
+    audio_conf = audio_r['confidence']
 
-    # ── Technical: normalized, not inflated ──
-    technical = round(
-        kw.get('technical',{})
-        .get('score',0),1)
+    # Effective weight = base prior * this-sample confidence
+    w_text = BASE_TEXT * text_conf
+    w_face = BASE_FACE * face_conf
+    w_audio = BASE_AUDIO * audio_conf
+    total_w = w_text + w_face + w_audio + 1e-6
+    w_text, w_face, w_audio = (
+        w_text/total_w, w_face/total_w, w_audio/total_w)
 
-    # ── Answer quality: STAR weight is 0 for
-    # introductions, not 50 ───────────────────
-    star_weight = (0 if star['is_intro']
-                   else star['completeness'])
-    if star_weight is None:
-        star_weight = 0
+    text_score = (
+        text_r['confidence'] * 100 if text_r['emotion'] == 'positive'
+        else text_r['confidence'] * 60 if text_r['emotion'] == 'surprised'
+        else 100 - text_r['confidence'] * 70)
 
-    text_score_raw = (
-        text_r['confidence']*100
-        if text_r['emotion']=='positive'
-        else text_r['confidence']*60
-        if text_r['emotion']=='surprised'
-        else 100-text_r['confidence']*70)
-
-    answer_quality = round(min(100,
-        kw.get('overall',30)*0.40+
-        star_weight*0.40+
-        text_score_raw*0.20),1)
-
-    # ── Face-derived component ────────────────
     face_score = (
-        85 if face_r['display_label']==
-            "Positive / engaged"
-        else 75 if face_r['display_label']==
-            "Alert / responsive"
-        else 60)
+        85 if face_r['display_label'] == "Positive / engaged" else
+        75 if face_r['display_label'] == "Alert / responsive" else 60)
     face_score = min(100,
-        face_score+
-        (face_r['camera_presence_pct']-50)*0.3)
+        face_score + (face_r['camera_presence_pct'] - 50) * 0.3)
 
-    # ── Audio-derived component ───────────────
     audio_score = (
-        85 if audio_r['vocal_tone'] in (
-            "Energetic and confident",
-            "Confident")
-        else 75 if audio_r['vocal_tone']==
-            "Calm and steady"
-        else 45 if audio_r['vocal_tone']==
-            "Slightly nervous"
-        else 65)
-    if audio_r['pause_control']=="Needs work":
+        85 if audio_r['vocal_tone'] in
+            ("Energetic and confident", "Confident") else
+        75 if audio_r['vocal_tone'] == "Calm and steady" else
+        45 if audio_r['vocal_tone'] == "Slightly nervous" else 65)
+    if audio_r['pause_control'].startswith("Needs"):
         audio_score -= 10
-    elif audio_r['pause_control']=="Excellent":
+    elif audio_r['pause_control'].startswith("Excellent"):
         audio_score += 5
-    audio_score = max(0,min(100,audio_score))
+    audio_score = max(0, min(100, audio_score))
 
-    # ── Confidence: face 60% + audio 40% ─────
-    confidence_score = round(
-        face_score*0.60+audio_score*0.40,1)
-
-    # ── Confidence-weighted fusion ────────────
-    BASE_T, BASE_F, BASE_A = 0.55, 0.30, 0.15
-    w_t = BASE_T*text_r['confidence']
-    w_f = BASE_F*face_r['confidence']
-    w_a = BASE_A*audio_r['confidence']
-    tot = w_t+w_f+w_a+1e-6
-    w_t,w_f,w_a = w_t/tot,w_f/tot,w_a/tot
-
-    fusion_overall = round(min(100,max(0,
-        text_score_raw*w_t+
-        face_score*w_f+
-        audio_score*w_a)),1)
-
-    # ── Overall: weighted blend of dimensions
-    # so weak technical/answer_quality actually
-    # drag the score down ─────────────────────
     overall = round(
-        communication  *0.30+
-        professionalism*0.20+
-        technical      *0.20+
-        answer_quality *0.20+
-        confidence_score*0.10,1)
+        text_score * w_text + face_score * w_face +
+        audio_score * w_audio, 1)
 
-    # Blend with fusion (30% weight)
-    overall = round(
-    overall * 0.80 +
-    fusion_overall * 0.20,
-    1)
+    confidence_score = round(face_score, 1)
+    clarity_score = round(
+        sq.get('clarity_score', overall)*0.5 +
+        sq.get('grammar_score', overall)*0.3 +
+        sq.get('fluency_score', overall)*0.2, 1) if sq else overall
+    answer_quality = round(min(100,
+        kw.get('overall', 30)*0.4 + star['completeness']*0.4 +
+        text_score*0.2), 1)
+    professionalism = round(min(100,
+        (100 - sq.get('repetition_pct', 0)*2) * 0.4 +
+        sq.get('grammar_score', 70) * 0.3 +
+        clarity_score * 0.3), 1)
+    technical_relevance = round(kw.get('technical', {}).get('score', 0), 1)
 
     return {
-        'overall'        : overall,
-        'communication'  : communication,
-        'professionalism': professionalism,
-        'technical'      : technical,
-        'answer_quality' : answer_quality,
-        'confidence'     : confidence_score,
-        'weights_used'   : {
-            'text' : round(w_t,2),
-            'face' : round(w_f,2),
-            'audio': round(w_a,2)}}
+        'overall'             : overall,
+        'confidence'          : confidence_score,
+        'clarity'             : clarity_score,
+        'answer_quality'      : answer_quality,
+        'professionalism'     : professionalism,
+        'technical_relevance' : technical_relevance,
+        'weights_used'        : {
+            'text': round(w_text, 2), 'face': round(w_face, 2),
+            'audio': round(w_audio, 2)}}
 
 
-def get_recommendation(scores, star):
-    overall       = scores['overall']
-    technical     = scores['technical']
-    communication = scores['communication']
-    star_comp = star['completeness']
-
-    if (overall >= 85 and
-            technical >= 65 and
-            communication >= 70):
+def get_recommendation(scores, star_completeness):
+    overall = scores['overall']
+    if overall >= 82 and star_completeness >= 50:
         return "Strong Hire", "#27ae60"
-    elif overall >= 70 and (
-            star_comp is None or
-            star_comp >= 50):
+    elif overall >= 68:
         return "Hire", "#3498db"
-    elif overall >= 55:
-        return "Consider", "#f39c12"
+    elif overall >= 50:
+        return "Borderline", "#f39c12"
     else:
         return "Needs Improvement", "#e74c3c"
 
 
 # ═══════════════════════════════════════════════════════
-# FEEDBACK — personalized with real numbers
+# TEMPLATE-DRIVEN FEEDBACK SYNTHESIS
+# (more granular than before — pulls specific numbers
+# from transcript/speech/face data into each point rather
+# than generic statements, to read closer to AI-generated
+# feedback without requiring an external API)
 # ═══════════════════════════════════════════════════════
 
-def generate_feedback(scores, face_r, audio_r,
-                       text_r, sq, star, kw):
-    strengths, improvements, tips = [], [], []
+def generate_feedback(scores, face_r, audio_r, text_r, sq, star, kw):
+    overall = scores['overall']
+    strengths, improvements = [], []
 
-    if scores['communication'] > 70:
-        strengths.append(
-            f"Clear communication — "
-            f"vocabulary richness "
-            f"{sq.get('vocabulary_richness',0):.2f}, "
-            f"grammar score "
-            f"{sq.get('grammar_score',0):.0f}%")
     if scores['confidence'] > 70:
         strengths.append(
-            f"Good on-camera presence — "
-            f"face visible in "
-            f"{face_r['camera_presence_pct']:.0f}%"
-            f" of frames, vocal tone: "
-            f"{audio_r['vocal_tone'].lower()}")
-    if (star['completeness'] is not None and
-            star['completeness'] >= 75):
-        found = sum(
-            star['components_found'].values())
+            f"Composed on-camera presence "
+            f"({face_r['camera_presence_pct']:.0f}% of frames "
+            f"showed clear face visibility)")
+    if scores['clarity'] > 70:
         strengths.append(
-            f"Strong STAR structure — "
-            f"{found}/4 components covered")
-    if audio_r['vocal_tone'] in (
-            "Calm and steady","Confident",
-            "Energetic and confident"):
+            f"Clear communication with "
+            f"{sq.get('avg_sentence_length',0):.0f} words per "
+            f"sentence on average — well-structured delivery")
+    if star['completeness'] >= 75:
         strengths.append(
-            f"Vocal delivery was "
-            f"{audio_r['vocal_tone'].lower()}"
-            f" with {audio_r['voice_stability']:.0f}"
-            f"% stability")
-    if scores['technical'] > 60:
-        found_tech = kw.get(
-            'technical',{}).get('found',[])
-        if found_tech:
-            strengths.append(
-                f"Good technical vocabulary: "
-                f"{', '.join(found_tech[:3])}")
+            "Strong STAR-method structure — covered "
+            f"{sum(star['components_found'].values())}/4 components")
+    if audio_r['vocal_tone'] in ("Calm and steady", "Confident",
+                                   "Energetic and confident"):
+        strengths.append(
+            f"Vocal delivery came across as "
+            f"{audio_r['vocal_tone'].lower()}, with "
+            f"{audio_r['voice_stability']:.0f}% voice stability")
+    if audio_r['pause_control'].startswith(("Excellent", "Good")):
+        strengths.append(
+            f"Good pause control — {audio_r['pause_count']} "
+            f"natural pauses, no awkward silences")
+    if kw.get('technical', {}).get('score', 0) > 50:
+        found = kw['technical']['found']
+        strengths.append(
+            f"Demonstrated technical vocabulary: "
+            f"{', '.join(found[:3])}")
     if not strengths:
-        strengths = [
-            "Shows genuine engagement",
-            "Completed a full response"]
+        strengths = ["Shows genuine engagement with the question",
+                       "Completed a full response without trailing off"]
 
-    if scores['technical'] < 60:
+    if scores['confidence'] < 60:
         improvements.append(
-            "Mention more specific technologies "
-            "used in your projects (Python, SQL, "
-            "cloud tools, frameworks)")
-    if scores['communication'] < 70:
+            f"On-camera presence was only "
+            f"{face_r['camera_presence_pct']:.0f}% — try to keep "
+            "your face clearly in frame and centered")
+    if sq.get('filler_ratio', 0) > 0.06:
         improvements.append(
-            f"Reduce filler words "
-            f"({sq.get('filler_count',0)} detected"
-            f", ratio: "
-            f"{sq.get('filler_ratio',0)*100:.1f}%)"
-            " — pause silently instead")
-    if scores['professionalism'] < 70:
-        rw = sq.get('repeated_words',[])[:3]
+            f"Used filler words {sq.get('filler_count',0)} times — "
+            "try pausing silently instead of saying 'um' or 'like'")
+    if star['completeness'] < 50:
+        missing = [k for k, v in star['components_found'].items() if not v]
         improvements.append(
-            "Use more formal language — avoid "
-            f"repetition of: "
-            f"{', '.join(rw) if rw else 'filler words'}")
-    if (not star['is_intro'] and
-            star['completeness'] is not None and
-            star['completeness'] < 50):
-        missing = [
-            k for k,v in
-            star['components_found'].items()
-            if not v]
+            f"Answer structure was missing: {', '.join(missing)} — "
+            "use the STAR method for clearer structure")
+    if audio_r['vocal_tone'] == "Slightly nervous":
         improvements.append(
-            f"STAR method missing: "
-            f"{', '.join(missing)} — "
-            "structure as Situation → Task "
-            "→ Action → Result")
-    if audio_r['vocal_tone']=="Slightly nervous":
+            "Vocal energy suggested some nervousness — practice "
+            "deep breathing before answering to steady your voice")
+    if audio_r['pause_control'].startswith("Needs"):
         improvements.append(
-            "Practice deep breathing before "
-            "answering — vocal energy suggested "
-            "nervousness")
-    if audio_r['pause_control']=="Needs work":
+            f"Average pause length was "
+            f"{audio_r['avg_pause_duration']:.1f}s — practice "
+            "answers aloud to reduce long hesitations")
+    if sq.get('repetition_pct', 0) > 15:
         improvements.append(
-            f"Long pauses detected (avg "
-            f"{audio_r['avg_pause_duration']:.1f}s)"
-            " — practice answers aloud")
-    if face_r['camera_presence_pct'] < 50:
+            f"Noticed repeated words ({', '.join(sq.get('repeated_words', [])[:3])}) "
+            "— vary your vocabulary for stronger impact")
+    if audio_r.get('words_per_minute') and (
+            audio_r['words_per_minute'] < 100 or
+            audio_r['words_per_minute'] > 180):
         improvements.append(
-            f"Keep face in frame — only visible "
-            f"in {face_r['camera_presence_pct']:.0f}"
-            "% of frames")
+            f"Speaking pace was {audio_r['pace_label'].lower()} "
+            f"({audio_r['words_per_minute']:.0f} words/min) — "
+            "aim for 120-160 wpm for clarity")
     if not improvements:
-        improvements = [
-            "Continue refining answer specificity",
-            "Practice more mock interviews"]
+        improvements = ["Continue refining answer specificity",
+                          "Practice more mock interviews"]
 
-    overall = scores['overall']
     if overall >= 80:
-        tips = [
-            "HIGH: Research company culture "
-            "and recent news",
-            "MED: Prepare 5 specific project "
-            "examples",
-            "LOW: Practice salary negotiation"]
+        tips = ["HIGH: Research company culture deeply",
+                "MED: Prepare 5 specific project examples",
+                "LOW: Practice salary negotiation"]
     elif overall >= 60:
-        tips = [
-            "HIGH: Practice STAR method daily "
-            "with a timer",
-            "HIGH: Record yourself and review "
-            "pacing",
-            "MED: Expand technical keyword "
-            "vocabulary"]
+        tips = ["HIGH: Practice STAR method daily",
+                "HIGH: Record yourself and review pacing",
+                "MED: Expand technical vocabulary"]
     elif overall >= 40:
-        tips = [
-            "HIGH: Daily mock interview practice"
-            " (30 min)",
-            "HIGH: Work on STAR answer structure",
-            "HIGH: Reduce filler words — "
-            "pause instead"]
+        tips = ["HIGH: Daily mock interview practice",
+                "HIGH: Work on answer structure (STAR)",
+                "MED: Improve vocabulary range"]
     else:
-        tips = [
-            "HIGH: Daily mirror practice for "
-            "confidence",
-            "HIGH: Study and apply STAR method",
-            "HIGH: Work on vocal confidence "
-            "and pace"]
+        tips = ["HIGH: Daily mirror practice",
+                "HIGH: Study and apply STAR method",
+                "HIGH: Work on building vocal confidence"]
 
-    return {
-        'strengths'   : strengths[:4],
-        'improvements': improvements[:4],
-        'tips'        : tips}
+    return {'strengths': strengths[:4],
+             'improvements': improvements[:4], 'tips': tips}
 
-
-# ═══════════════════════════════════════════════════════
-# CHARTS
-# ═══════════════════════════════════════════════════════
 
 def create_radar_chart(scores):
-    cats = ['Communication','Confidence',
-             'Professionalism','Technical',
-             'Answer Quality']
-    vals = [scores['communication'],
-             scores['confidence'],
-             scores['professionalism'],
-             scores['technical'],
-             scores['answer_quality']]
-    vc = vals + [vals[0]]
-    cc = cats + [cats[0]]
+    categories = ['Communication', 'Confidence', 'Professionalism',
+                   'Technical', 'Answer Quality']
+    values = [scores['clarity'], scores['confidence'],
+               scores['professionalism'], scores['technical_relevance'],
+               scores['answer_quality']]
+    vc = values + [values[0]]
+    cc = categories + [categories[0]]
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(
         r=vc, theta=cc, fill='toself',
         fillcolor='rgba(102,126,234,0.2)',
-        line=dict(color='#667eea',width=2)))
+        line=dict(color='#667eea', width=2)))
     fig.update_layout(
-        polar=dict(radialaxis=dict(
-            visible=True,range=[0,100])),
-        showlegend=False,height=350,
-        margin=dict(t=30,b=30,l=30,r=30),
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=False, height=350,
+        margin=dict(t=30, b=30, l=30, r=30),
         paper_bgcolor='rgba(0,0,0,0)')
-    return fig
-
-
-def create_benchmark_chart(scores, color):
-    bm = {
-        'Your Score'       : scores['overall'],
-        'Average Candidate': 58.0,
-        'Good Candidate'   : 72.0,
-        'Top Candidate'    : 88.0}
-    fig = go.Figure(go.Bar(
-        x=list(bm.values()),
-        y=list(bm.keys()),
-        orientation='h',
-        marker_color=[
-            color,'#95a5a6','#3498db','#27ae60'],
-        text=[f"{v:.1f}" for v in bm.values()],
-        textposition='auto'))
-    fig.update_layout(
-        xaxis=dict(range=[0,100]),height=200,
-        paper_bgcolor='rgba(0,0,0,0)',
-        margin=dict(t=10,b=10,l=10,r=10))
     return fig
 
 
@@ -1177,15 +1123,12 @@ def create_benchmark_chart(scores, color):
 # ═══════════════════════════════════════════════════════
 
 def main():
+    st.markdown('<div class="main-header">🎯 AI Interview Analyzer</div>',
+                 unsafe_allow_html=True)
     st.markdown(
-        '<div class="main-header">'
-        '🎯 AI Interview Analyzer</div>',
-        unsafe_allow_html=True)
-    st.markdown(
-        "<p style='text-align:center;"
-        "color:#666;'>Interview evaluation "
-        "platform — communication, delivery "
-        "and answer quality</p>",
+        "<p style='text-align:center;color:#666;'>"
+        "Interview evaluation platform — communication, "
+        "delivery, and answer quality</p>",
         unsafe_allow_html=True)
     st.divider()
 
@@ -1197,31 +1140,25 @@ def main():
     st.sidebar.divider()
     job_title = st.sidebar.text_input(
         "🎯 Target Job Role",
-        placeholder="e.g. Software Engineer...",
+        placeholder="e.g. Software Engineer, Data Scientist...",
         value="")
 
     st.sidebar.divider()
     st.sidebar.info(
-        "📌 Upload a video of only the "
-        "candidate for best results.")
+        "📌 Upload a video of only the candidate "
+        "answering questions for best results.")
 
     st.sidebar.divider()
     st.sidebar.markdown(
         "**📊 Evaluation dimensions:**\n"
-        "- 💬 Communication (filler+grammar+"
-        "fluency+vocab)\n"
-        "- 🎤 Voice stability, pace, pauses\n"
+        "- 💬 Communication & answer structure\n"
+        "- 🎤 Voice stability, pace, pause control\n"
         "- 👁️ Camera presence\n"
-        "- 🔧 Technical keyword relevance\n"
-        "- ⭐ STAR method (N/A for intros)\n\n"
-        "ℹ️ Confidence = face 60% + audio 40%\n"
-        "ℹ️ Fusion weights scale dynamically "
-        "with each model's confidence on "
-        "your clip.")
+        "- 🔑 Technical keyword relevance\n"
+        "- ⭐ STAR method completeness\n\n"
+        )
 
-    tab1, tab2 = st.tabs([
-        "📹 Upload Video/Audio",
-        "✏️ Paste Transcript"])
+    tab1, tab2 = st.tabs(["📹 Upload Video/Audio", "✏️ Paste Transcript"])
 
     transcript = ""
     tmp_path = None
@@ -1230,252 +1167,162 @@ def main():
 
     with tab1:
         st.markdown(
-            "**Upload candidate video** "
-            "(single speaker) for full analysis.")
+            "**Upload candidate video**")
         uploaded = st.file_uploader(
             "Choose video or audio file",
-            type=['mp4','mov','avi',
-                  'wav','mp3','m4a'],
+            type=['mp4','mov','avi','wav','mp3','m4a'],
             help="Max 200MB.")
 
         if uploaded:
-            suffix = os.path.splitext(
-                uploaded.name)[1]
+            suffix = os.path.splitext(uploaded.name)[1]
             with tempfile.NamedTemporaryFile(
-                    delete=False,
-                    suffix=suffix) as tmp:
+                    delete=False, suffix=suffix) as tmp:
                 tmp.write(uploaded.read())
                 tmp_path = tmp.name
-            is_video = uploaded.type\
-                .startswith('video')
+            is_video = uploaded.type.startswith('video')
             if is_video:
                 st.video(uploaded)
             else:
                 st.audio(uploaded)
 
-            if st.button(
-                    "🎯 Analyze Interview",
-                    type="primary",
-                    key="btn_video"):
+            if st.button("🎯 Analyze Interview",
+                          type="primary", key="btn_video"):
                 progress = st.progress(0)
                 status = st.empty()
 
-                status.info(
-                    "📝 Transcribing audio...")
+                status.info("📝 Transcribing audio...")
                 progress.progress(10)
                 try:
                     import whisper
                     wm = whisper.load_model("tiny")
                     result = wm.transcribe(
-                        tmp_path,
-                        language='en',
-                        fp16=False)
-                    transcript = \
-                        result['text'].strip()
+                        tmp_path, language='en', fp16=False)
+                    transcript = result['text'].strip()
+                    transcript = transcript.lower()
+                    transcript = transcript.replace("'ve", " have")
+                    transcript = transcript.replace("'re", " are")
+                    transcript = transcript.replace("'m", " am")
                     progress.progress(35)
-                    st.success(
-                        "✅ Transcription done!")
-                    st.text_area(
-                        "📝 Transcript",
-                        transcript, height=120)
+                    st.success("✅ Transcription complete!")
+                    st.text_area("📝 Transcript", transcript, height=120)
                 except Exception as e:
-                    st.error(
-                        f"Transcription error: {e}")
+                    st.error(f"Transcription error: {e}")
                     progress.progress(35)
 
-                if is_video and \
-                        models.get('face'):
-                    status.info(
-                        "👁️ Analyzing camera "
-                        "presence...")
+                if is_video and models.get('face'):
+                    status.info("👁️ Analyzing camera presence...")
                     progress.progress(50)
-                    face_r = \
-                        analyze_face_from_video(
-                            tmp_path,
-                            models['face'])
+                    face_r = analyze_face_from_video(tmp_path, models['face'])
                     if face_r:
                         st.caption(
-                            f"👁️ Camera: "
-                            f"{face_r['camera_presence_pct']:.0f}% | "
-                            f"Smile: "
+                            f"👁️ Camera presence: "
+                            f"{face_r['camera_presence_pct']:.0f}% of "
+                            f"frames | Smile frequency: "
                             f"{face_r['smile_pct']:.0f}% | "
-                            f"Consistency: "
-                            f"{face_r['consistency']:.0f}%")
+                            f"Consistency: {face_r['consistency']:.0f}%")
+                    else:
+                        st.caption("👁️ No clear face detected in video")
 
-                status.info(
-                    "🎤 Analyzing voice...")
+                status.info("🎤 Analyzing voice (VAD, pitch, pace)...")
                 progress.progress(70)
-                wc = (len(transcript.split())
-                       if transcript else None)
-                audio_r = \
-                    analyze_audio_from_video(
-                        tmp_path,
-                        models.get('audio'),
-                        transcript_word_count=wc)
+                word_count = len(transcript.split()) if transcript else None
+                audio_r = analyze_audio_from_video(
+                    tmp_path, models.get('audio'),
+                    transcript_word_count=word_count)
                 if audio_r:
                     st.caption(
-                        f"🎤 Tone: "
-                        f"**{audio_r['vocal_tone']}**"
-                        f" | Stability: "
-                        f"{audio_r['voice_stability']:.0f}%"
-                        f" | Pace: "
-                        f"{audio_r['pace_label']}")
+                        f"🎤 Vocal tone: **{audio_r['vocal_tone']}** | "
+                        f"Stability: {audio_r['voice_stability']:.0f}% | "
+                        f"Pace: {audio_r['pace_label']} | "
+                        f"Pauses: {audio_r['pause_count']}")
 
                 progress.progress(100)
                 status.empty()
                 progress.empty()
 
     with tab2:
-        st.markdown(
-            "Paste **your interview answers** "
-            "for text-based analysis.")
+        st.markdown("Paste **your interview answers** for text-based analysis only.")
         transcript_input = st.text_area(
             "Paste your answers here",
-            placeholder=
-                "In my previous role I led a "
-                "team of 5 engineers...",
+            placeholder="In my previous role I led a team of 5 engineers to solve...",
             height=200)
-        if st.button(
-                "🎯 Analyze Text",
-                type="primary",
-                key="btn_text"):
+        if st.button("🎯 Analyze Text", type="primary", key="btn_text"):
             transcript = transcript_input
 
     # ═══════════════════════════════════════
     if transcript and len(transcript) > 20:
-
-        # Transcript quality check
-        word_count_check = len(
-            transcript.split())
-        if word_count_check < 20:
-            st.warning(
-                "⚠️ Response is too short "
-                f"({word_count_check} words). "
-                "Please provide a more "
-                "complete answer for accurate "
-                "analysis.")
-            return
-
         st.divider()
-        st.subheader(
-            "📊 Interview Evaluation Report")
+        st.subheader("📊 Interview Evaluation Report")
 
         with st.spinner("Running analysis..."):
-            sq    = analyze_speech_quality(
-                transcript)
-            star  = compute_star_completeness(
-                transcript)
-            text_r = predict_text_emotion(
-                transcript, models)
-            kw    = compute_keyword_score(
-                transcript)
+            sq = analyze_speech_quality(transcript)
+            star = compute_star_completeness(transcript)
+            text_r = predict_text_emotion(transcript, models)
+            kw = compute_keyword_score(transcript)
 
             if face_r is None:
-                face_r = {
-                    'display_label'      :
-                        'Neutral / composed',
-                    'raw_emotion'        : 'neutral',
-                    'is_decisive'        : False,
-                    'confidence'         : 0.5,
-                    'camera_presence_pct': 0,
-                    'smile_pct'          : 0,
-                    'consistency'        : 0,
-                    'probs'              : [0.14]*7,
-                    'dim'                : 4,
-                    'frames_analyzed'    : 0,
-                    'frames_used'        : 0}
+                face_r = {'display_label':'Neutral / composed',
+                           'raw_emotion':'neutral','is_decisive':False,
+                           'confidence':0.5,'camera_presence_pct':0,
+                           'smile_pct':0,'consistency':0,
+                           'probs':[0.14]*7,'dim':4,
+                           'frames_analyzed':0,'frames_used':0}
             if audio_r is None:
-                audio_r = {
-                    'vocal_tone'        : 'Neutral',
-                    'voice_stability'   : 50,
-                    'energy_stability'  : 50,
-                    'pitch_stability'   : 50,
-                    'pitch_mean'        : 0,
-                    'loudness_variation': 0,
-                    'pace_label'        : 'Unknown',
-                    'words_per_minute'  : None,
-                    'silence_pct'       : 0,
-                    'pause_count'       : 0,
-                    'avg_pause_duration': 0,
-                    'pause_ratio'       : 0,
-                    'pause_control'     : 'Unknown',
-                    'confidence'        : 0.5,
-                    'probs'             : [0.14]*6,
-                    'dim'               : 4,
-                    'cnn_label'         : None,
-                    'cnn_decisive'      : False}
+                audio_r = {'vocal_tone':'Neutral','voice_stability':50,
+                            'energy_stability':50,'pitch_stability':50,
+                            'pitch_mean':0,'loudness_variation':0,
+                            'pace_label':'Unknown','words_per_minute':None,
+                            'silence_pct':0,'pause_count':0,
+                            'avg_pause_duration':0,'pause_ratio':0,
+                            'pause_control':'Unknown','confidence':0.5,
+                            'probs':[0.14]*6,'dim':4,
+                            'cnn_label':None,'cnn_decisive':False}
 
-            scores = compute_scores(
-                text_r, face_r, audio_r,
-                sq, star, kw)
+            scores = confidence_weighted_fusion(
+                text_r, face_r, audio_r, sq, star, kw)
             fb = generate_feedback(
-                scores, face_r, audio_r,
-                text_r, sq, star, kw)
-            recommendation, rec_color = \
-                get_recommendation(scores, star)
+                scores, face_r, audio_r, text_r, sq, star, kw)
+            recommendation, rec_color = get_recommendation(
+                scores, star['completeness'])
 
-        # ── Headline stats ─────────────────
-        s1,s2,s3,s4 = st.columns(4)
-        with s1:
-            st.metric("⏱️ Words",
-                       sq.get('total_words',0))
-        with s2:
-            st.metric("🎯 Score",
-                       f"{scores['overall']}/100")
-        with s3:
-            st.metric("🔧 Technical",
-                       f"{scores['technical']:.0f}%")
-        with s4:
-            sd = ("N/A (intro)"
-                   if star['is_intro']
-                   else f"{star['completeness']:.0f}%")
-            st.metric("⭐ STAR", sd)
+        # ── Headline metrics ──────────────
+        s1, s2, s3, s4 = st.columns(4)
+        with s1: st.metric("⏱️ Words", sq.get('total_words', 0))
+        with s2: st.metric("🎯 Score", f"{scores['overall']}/100")
+        with s3: st.metric("⭐ STAR", f"{star['completeness']:.0f}%")
+        with s4: st.metric("🔑 Tech Match",
+                              f"{scores['technical_relevance']:.0f}%")
         st.divider()
 
-        # ── Recommendation ─────────────────
+        # ── Recommendation badge ──────────
         st.markdown(
-            f'<div style="text-align:center;'
-            f'margin:1rem 0">'
-            f'<span class="rec-badge" '
-            f'style="background:{rec_color}">'
-            f'Recommendation: {recommendation}'
-            f'</span></div>',
+            f'<div style="text-align:center;margin:1rem 0">'
+            f'<span class="rec-badge" style="background:{rec_color}">'
+            f'Recommendation: {recommendation}</span></div>',
             unsafe_allow_html=True)
         st.caption(
-            f"Confidence-weighted fusion — "
-            f"Text: "
-            f"{scores['weights_used']['text']*100:.0f}%, "
-            f"Face: "
-            f"{scores['weights_used']['face']*100:.0f}%, "
-            f"Audio: "
-            f"{scores['weights_used']['audio']*100:.0f}%")
+            f"Fusion weights for this clip — "
+            f"Text: {scores['weights_used']['text']*100:.0f}%, "
+            f"Face: {scores['weights_used']['face']*100:.0f}%, "
+            f"Audio: {scores['weights_used']['audio']*100:.0f}% "
+            f"(scaled by each model's confidence on this sample)")
         st.divider()
 
-        # ── Score + Radar ───────────────────
-        col1, col2 = st.columns([1,2])
+        col1, col2 = st.columns([1, 2])
         with col1:
             st.markdown(
                 f'<div class="score-card">'
-                f'<div class="score-number" '
-                f'style="color:{rec_color}">'
+                f'<div class="score-number" style="color:{rec_color}">'
                 f'{scores["overall"]}</div>'
-                f'<div style="color:#666;'
-                f'font-size:0.9rem">'
-                f'Interview Score / 100'
-                f'</div></div>',
+                f'<div style="color:#666;font-size:0.9rem">'
+                f'Interview Score / 100</div></div>',
                 unsafe_allow_html=True)
-            for name, key in [
-                ("💬 Communication",
-                 'communication'),
-                ("👔 Professionalism",
-                 'professionalism'),
-                ("🔧 Technical",
-                 'technical'),
-                ("⭐ Answer Quality",
-                 'answer_quality'),
-                ("🎯 Confidence",
-                 'confidence')]:
-                val = scores[key]
+            for name, val in [
+                ("🎯 Confidence", scores['confidence']),
+                ("💬 Communication", scores['clarity']),
+                ("👔 Professionalism", scores['professionalism']),
+                ("🔧 Technical Relevance", scores['technical_relevance']),
+                ("⭐ Answer Quality", scores['answer_quality'])]:
                 ca, cb = st.columns([2,1])
                 with ca:
                     st.markdown(f"**{name}**")
@@ -1483,292 +1330,205 @@ def main():
                 with cb:
                     st.markdown(f"**{val:.0f}**")
         with col2:
-            st.plotly_chart(
-                create_radar_chart(scores),
-                use_container_width=True)
+            st.plotly_chart(create_radar_chart(scores), use_container_width=True)
 
-        st.divider()
-
-        st.subheader("📊 Benchmark Comparison")
-        st.plotly_chart(
-            create_benchmark_chart(
-                scores, rec_color),
-            use_container_width=True)
         st.divider()
 
         col3, col4 = st.columns(2)
         with col3:
             st.subheader("👁️ Camera Presence")
             st.markdown(
-                f'<div class="trait-card">'
-                f'<b>Impression:</b> '
-                f'{face_r["display_label"]}'
-                f'</div>',
+                f'<div class="trait-card"><b>Impression:</b> '
+                f'{face_r["display_label"]}</div>',
                 unsafe_allow_html=True)
-            st.progress(
-                int(face_r[
-                    'camera_presence_pct']),
-                text=f"In frame: "
-                     f"{face_r['camera_presence_pct']:.0f}%")
-            st.progress(
-                int(face_r['smile_pct']),
-                text=f"Smile frequency: "
-                     f"{face_r['smile_pct']:.0f}%")
-            st.progress(
-                int(face_r['consistency']),
-                text=f"Consistency: "
-                     f"{face_r['consistency']:.0f}%")
+            st.progress(int(face_r['camera_presence_pct']),
+                         text=f"In frame: {face_r['camera_presence_pct']:.0f}%")
+            st.progress(int(face_r['smile_pct']),
+                         text=f"Smile frequency: {face_r['smile_pct']:.0f}%")
+            st.progress(int(face_r['consistency']),
+                         text=f"Consistency: {face_r['consistency']:.0f}%")
 
         with col4:
             st.subheader("🎤 Voice Analysis")
             st.markdown(
-                f'<div class="trait-card">'
-                f'<b>Vocal tone:</b> '
-                f'{audio_r["vocal_tone"]}'
-                f'</div>',
+                f'<div class="trait-card"><b>Vocal tone:</b> '
+                f'{audio_r["vocal_tone"]}</div>',
                 unsafe_allow_html=True)
-            st.progress(
-                int(audio_r['voice_stability']),
-                text=f"Voice stability: "
-                     f"{audio_r['voice_stability']:.0f}%")
+            st.progress(int(audio_r['voice_stability']),
+                         text=f"Voice stability: {audio_r['voice_stability']:.0f}%")
             if audio_r.get('words_per_minute'):
                 st.markdown(
-                    f"**Pace:** "
-                    f"{audio_r['pace_label']} "
-                    f"({audio_r['words_per_minute']:.0f}"
-                    f" wpm)")
-            st.markdown(
-                f"**Pause control:** "
-                f"{audio_r['pause_control']}")
+                    f"**Pace:** {audio_r['pace_label']} "
+                    f"({audio_r['words_per_minute']:.0f} wpm)")
+            st.markdown(f"**Pause control:** {audio_r['pause_control']}")
             st.caption(
-                f"{audio_r['pause_count']} "
-                f"pauses | "
-                f"{audio_r['silence_pct']:.0f}"
-                f"% silence")
+                f"{audio_r['pause_count']} pauses, "
+                f"{audio_r['silence_pct']:.0f}% silence overall")
 
         st.divider()
 
-        st.subheader("🔑 Keyword Coverage")
+        st.subheader("🔑 Technical & Skill Assessment")
+
+        insights = {
+        "technical":
+        "Demonstrates technical knowledge through programming languages, tools and project experience.",
+
+        "problem_solving":
+        "Shows practical problem-solving ability by describing implementation, development and technical challenges.",
+
+        "communication":
+        "Communicates ideas clearly and demonstrates teamwork and project discussion skills."
+        }
+
         for cat, data in kw.items():
-            if cat == 'overall':
-                continue
-            sc    = data['score']
-            found = data['found']
-            ck = ('#27ae60' if sc>60
-                  else '#e67e22' if sc>30
-                  else '#e74c3c')
-            st.markdown(
-                f"**{cat.replace('_',' ').title()}**"
-                f': <span style="color:{ck}">'
-                f'{sc:.0f}%</span>',
-                unsafe_allow_html=True)
-            if found:
-                st.markdown(
-                    f"  *Found: "
-                    f"{', '.join(found[:4])}*")
-            st.progress(int(sc))
+          
+          if cat == "overall":
+           continue
+
+          score = data["score"]
+
+          color = (
+              "#27ae60" if score >= 70
+              else "#f39c12" if score >= 40
+              else "#e74c3c"
+          )
+
+          st.markdown(
+        f"**{cat.replace('_',' ').title()}**: "
+        f'<span style="color:{color}">{score:.0f}%</span>',
+        unsafe_allow_html=True
+          )
+
+          st.progress(int(score))
+
+          st.info(insights.get(cat, "Good overall performance."))
+
+          st.markdown("")
 
         st.divider()
 
-        st.subheader("⭐ STAR Method")
-        if star['is_intro']:
-            st.info(
-                "ℹ️ Introduction detected — "
-                "STAR analysis not applicable")
-        else:
-            sc = st.columns(4)
-            for col,(comp,present) in zip(
-                    sc,
-                    star['components_found']\
-                        .items()):
-                with col:
-                    icon = "✅" if present else "❌"
-                    st.markdown(
-                        f"{icon} **{comp.title()}**")
+        st.subheader("⭐ STAR Method Coverage")
+        star_cols = st.columns(4)
+        for col, (comp, present) in zip(star_cols, star['components_found'].items()):
+            with col:
+                icon = "✅" if present else "❌"
+                st.markdown(f"{icon} **{comp.title()}**")
 
         st.divider()
 
         st.subheader("💬 Feedback")
-        c5,c6,c7 = st.columns(3)
+        c5, c6, c7 = st.columns(3)
         with c5:
             st.markdown("### ✅ Strengths")
             for s in fb['strengths']:
                 st.markdown(
-                    f'<div class="feedback-card">'
-                    f'<span class="strength-item">'
-                    f'✅ {s}</span></div>',
-                    unsafe_allow_html=True)
+                    f'<div class="feedback-card"><span class="strength-item">'
+                    f'✅ {s}</span></div>', unsafe_allow_html=True)
         with c6:
             st.markdown("### ⚠️ Improve")
             for im in fb['improvements']:
                 st.markdown(
-                    f'<div class="feedback-card">'
-                    f'<span class="improve-item">'
-                    f'⚠️ {im}</span></div>',
-                    unsafe_allow_html=True)
+                    f'<div class="feedback-card"><span class="improve-item">'
+                    f'⚠️ {im}</span></div>', unsafe_allow_html=True)
         with c7:
             st.markdown("### 💡 Action Tips")
             for t in fb['tips']:
                 pr = t.split(':')[0]
-                css = {
-                    'HIGH':'tip-high',
-                    'MED' :'tip-med',
-                    'LOW' :'tip-low'}.get(
-                    pr,'tip-med')
+                css = {'HIGH':'tip-high','MED':'tip-med','LOW':'tip-low'}.get(pr,'tip-med')
                 st.markdown(
-                    f'<div class="feedback-card">'
-                    f'<span class="{css}">'
-                    f'💡 {t}</span></div>',
-                    unsafe_allow_html=True)
+                    f'<div class="feedback-card"><span class="{css}">'
+                    f'💡 {t}</span></div>', unsafe_allow_html=True)
 
         st.divider()
 
-        st.subheader("📝 Speech Quality")
-        c8,c9 = st.columns(2)
+        st.subheader("📝 Speech Quality Detail")
+        c8, c9 = st.columns(2)
         with c8:
-            m1,m2 = st.columns(2)
+            m1, m2 = st.columns(2)
             with m1:
-                st.metric("Word Count",
-                           sq.get('total_words',0))
-                st.metric("Filler Words",
-                           sq.get('filler_count',0))
-                st.metric("Avg Sentence",
-                           sq.get(
-                               'avg_sentence_length',
-                               0))
+                st.metric("Word Count", sq.get('total_words', 0))
+                st.metric("Filler Words", sq.get('filler_count', 0))
+                st.metric("Avg Sentence Length", sq.get('avg_sentence_length', 0))
             with m2:
-                st.metric("Vocab Richness",
-                    f"{sq.get('vocabulary_richness',0):.2f}")
-                st.metric("Grammar Score",
-                    f"{sq.get('grammar_score',0):.0f}%")
-                st.metric("Repetition",
-                    f"{sq.get('repetition_pct',0):.0f}%")
+                st.metric("Vocab Richness", f"{sq.get('vocabulary_richness',0):.2f}")
+                st.metric("Grammar Score", f"{sq.get('grammar_score',0):.0f}%")
+                st.metric("Repetition", f"{sq.get('repetition_pct',0):.0f}%")
         with c9:
-            st.text_area(
-                "Transcript analyzed:",
-                transcript,
-                height=200, disabled=True)
+            st.text_area("Transcript analyzed:", transcript, height=200, disabled=True)
 
         st.divider()
 
-        st.subheader("🏅 Interview Readiness")
+        st.subheader("🏅 Interview Readiness Summary")
         st.markdown(
-            f'<div class="cert-box" style="'
-            f'background:linear-gradient(135deg,'
-            f'{rec_color}15,{rec_color}30);'
-            f'border:2px solid {rec_color};">'
-            f'<h2 style="color:{rec_color}">'
-            f'🎯 Interview Evaluation Report'
-            f'</h2>'
-            f'<h3 style="color:#333">'
-            f'Job Role: {job_title or "General"}'
-            f'</h3>'
-            f'<div style="font-size:4rem;'
-            f'font-weight:bold;color:{rec_color}">'
+            f'<div class="cert-box" style="background:linear-gradient(135deg,'
+            f'{rec_color}15,{rec_color}30);border:2px solid {rec_color};">'
+            f'<h2 style="color:{rec_color}">🎯 Interview Evaluation Report</h2>'
+            f'<h3 style="color:#333">Job Role: {job_title or "General"}</h3>'
+            f'<div style="font-size:4rem;font-weight:bold;color:{rec_color}">'
             f'{scores["overall"]}/100</div>'
-            f'<div style="font-size:1.5rem;'
-            f'color:{rec_color};font-weight:bold">'
-            f'{recommendation}</div>'
-            f'<hr style="border-color:'
-            f'{rec_color}40">'
-            f'<div style="display:flex;'
-            f'justify-content:space-around;'
-            f'flex-wrap:wrap;margin-top:1rem">'
+            f'<div style="font-size:1.5rem;color:{rec_color};font-weight:bold">'
+            f'{recommendation}</div><hr style="border-color:{rec_color}40">'
+            f'<div style="display:flex;justify-content:space-around;margin-top:1rem;flex-wrap:wrap">'
             + ''.join(
-                f'<div style="margin:0.5rem">'
-                f'<div style="font-size:1.5rem;'
-                f'font-weight:bold;'
-                f'color:{rec_color}">'
-                f'{scores[k]:.0f}</div>'
-                f'<div style="color:#666;'
-                f'font-size:0.85rem">'
+                f'<div style="margin:0.5rem"><div style="font-size:1.5rem;'
+                f'font-weight:bold;color:{rec_color}">'
+                f'{scores[k]:.0f}</div><div style="color:#666;font-size:0.85rem">'
                 f'{lbl}</div></div>'
-                for k,lbl in [
-                    ('communication',
-                     'Communication'),
-                    ('professionalism',
-                     'Professionalism'),
-                    ('technical','Technical'),
-                    ('answer_quality',
-                     'Answer Quality'),
-                    ('confidence','Confidence')])
-            + '</div></div>',
-            unsafe_allow_html=True)
+                for k, lbl in [('confidence','Confidence'),
+                                ('clarity','Communication'),
+                                ('professionalism','Professionalism'),
+                                ('technical_relevance','Technical'),
+                                ('answer_quality','Answer Quality')])
+            + '</div></div>', unsafe_allow_html=True)
 
         st.divider()
-
         report = {
-            'job_title'      : job_title,
-            'recommendation' : recommendation,
-            'scores'         : scores,
+            'job_title': job_title, 'recommendation': recommendation,
+            'scores': scores,
             'camera_presence': {
-                'pct'       : face_r[
-                    'camera_presence_pct'],
-                'smile_pct' : face_r['smile_pct'],
-                'impression': face_r[
-                    'display_label']},
-            'voice'          : {
-                'tone'         : audio_r[
-                    'vocal_tone'],
-                'stability'    : audio_r[
-                    'voice_stability'],
-                'pace'         : audio_r[
-                    'pace_label'],
-                'wpm'          : audio_r.get(
-                    'words_per_minute'),
-                'pause_control': audio_r[
-                    'pause_control']},
-            'star'           : star,
-            'feedback'       : fb,
-            'keywords'       : {
-                k:v for k,v in kw.items()
-                if isinstance(v,dict)},
-            'speech_metrics' : sq,
-            'transcript'     : transcript}
-
+                'pct': face_r['camera_presence_pct'],
+                'smile_pct': face_r['smile_pct'],
+                'impression': face_r['display_label']},
+            'voice': {
+                'tone': audio_r['vocal_tone'],
+                'stability': audio_r['voice_stability'],
+                'pace': audio_r['pace_label'],
+                'wpm': audio_r.get('words_per_minute'),
+                'pause_control': audio_r['pause_control']},
+            'star_completeness': star,
+            'feedback': fb,
+            'keywords': {k: v for k, v in kw.items() if isinstance(v, dict)},
+            'speech_metrics': sq, 'transcript': transcript}
         st.download_button(
             label="📥 Download Full Report (JSON)",
-            data=json.dumps(report,indent=2),
-            file_name="interview_report.json",
-            mime="application/json")
+            data=json.dumps(report, indent=2),
+            file_name="interview_report.json", mime="application/json")
 
     else:
         st.markdown("""
-        <div style="text-align:center;
-             padding:3rem;
-             background:linear-gradient(
-                135deg,#667eea10,#764ba210);
+        <div style="text-align:center;padding:3rem;
+             background:linear-gradient(135deg,#667eea10,#764ba210);
              border-radius:20px;margin:2rem 0">
         <h2>🚀 How it works</h2>
         <p style="color:#666;font-size:1.1rem">
-        Upload a candidate-only interview video
-        or paste your answer text to get started
+        Upload a candidate-only interview video or paste your answer text
         </p></div>
         """, unsafe_allow_html=True)
-        c1,c2,c3,c4 = st.columns(4)
-        for col,emoji,title,desc in [
+        c1, c2, c3, c4 = st.columns(4)
+        for col, emoji, title, desc in [
             (c1,"🎥","Upload","Candidate video"),
-            (c2,"🤖","Analyze",
-             "Voice + presence + content"),
-            (c3,"📊","Score",
-             "Weighted evaluation"),
-            (c4,"💬","Decide",
-             "Hire recommendation")]:
+            (c2,"🤖","Analyze","Voice, presence & answer content"),
+            (c3,"📊","Score","Confidence-weighted evaluation"),
+            (c4,"💬","Decide","Hire recommendation + feedback")]:
             with col:
                 st.markdown(
-                    f'<div style="text-align:'
-                    f'center;padding:1.5rem;'
-                    f'background:#fff;'
-                    f'border-radius:15px;'
-                    f'box-shadow:0 2px 10px #0001;'
-                    f'margin:0.5rem">'
-                    f'<div style="font-size:2rem">'
-                    f'{emoji}</div>'
+                    f'<div style="text-align:center;padding:1.5rem;'
+                    f'background:#fff;border-radius:15px;'
+                    f'box-shadow:0 2px 10px #0001;margin:0.5rem">'
+                    f'<div style="font-size:2rem">{emoji}</div>'
                     f'<h4>{title}</h4>'
-                    f'<p style="color:#666;'
-                    f'font-size:0.85rem">'
-                    f'{desc}</p></div>',
-                    unsafe_allow_html=True)
+                    f'<p style="color:#666;font-size:0.85rem">{desc}</p>'
+                    f'</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
