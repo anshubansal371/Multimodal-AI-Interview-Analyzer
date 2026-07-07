@@ -1368,13 +1368,10 @@ def main():
         with col4:
             st.subheader("🎤 Voice Analysis")
 
-            st.markdown(
-    f'<div class="trait-card"><b>Vocal tone:</b> {audio_r["vocal_tone"]}</div>',
-    unsafe_allow_html=True
-)
+            st.markdown(f'<div class="trait-card"><b>Vocal tone:</b> {audio_r["vocal_tone"]}</div>',
+        unsafe_allow_html=True)
 
             if audio_r["voice_stability"] is not None:
-
                 st.progress(
         int(audio_r["voice_stability"]),
         text=f"Voice stability: {audio_r['voice_stability']:.0f}%"
@@ -1393,11 +1390,10 @@ def main():
         f"{audio_r['silence_pct']:.0f}% silence"
     )
 
-    else:
-
-        st.write("**Voice Stability:** N/A")
-        st.write("**Pause Control:** N/A")
-        st.write("**Pace:** N/A")
+            else:
+                st.write("**Voice Stability:** N/A")
+                st.write("**Pause Control:** N/A")
+                st.write("**Pace:** N/A")
 
         st.divider()
 
