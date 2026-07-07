@@ -111,11 +111,15 @@ FILLER_WORDS = ['um','uh','like','so','you know','basically',
 
 SKILL_KEYWORDS = {
     'technical': [
-        'python','java','sql','machine learning',
-        'deep learning','api','algorithm','tensorflow',
-        'pytorch','docker','cloud','database','code',
-        'software','system','data','model','trained',
-        'built','developed','programming'],
+        'python','java','c','c++','sql',
+    'database','databases',
+    'machine learning','deep learning',
+    'tensorflow','pytorch',
+    'docker','kubernetes',
+    'web development','html','css','javascript',
+    'api','software','project',
+    'developed','built','implemented',
+    'designed','created','cloud'],
     'leadership': [
         'led','managed','team','initiative','ownership',
         'mentored','coordinated','supervised','organized',
@@ -123,6 +127,8 @@ SKILL_KEYWORDS = {
         'head','guide','delegate','lead'],
     'problem_solving': [
         'solved','debugged','optimized','improved',
+        'project','implemented','created','developed',
+        'built','designed','application','system',
         'analyzed','designed','implemented','resolved',
         'fixed','approach','solution','challenge',
         'issue','problem','tackle','overcome','identify',
@@ -915,7 +921,7 @@ def compute_keyword_score(text):
 
 def confidence_weighted_fusion(text_r, face_r, audio_r, sq, star, kw):
     # Base reliability priors from validated model accuracy
-    BASE_TEXT, BASE_FACE, BASE_AUDIO = 0.55, 0.30, 0.15
+    BASE_TEXT, BASE_FACE, BASE_AUDIO = 0.60, 0.30, 0.10
 
     text_conf = text_r['confidence']
     face_conf = face_r['confidence'] if face_r['is_decisive'] else 0.4
@@ -985,10 +991,10 @@ def get_recommendation(scores, star_completeness):
     overall = scores['overall']
     if overall >= 82 and star_completeness >= 50:
         return "Strong Hire", "#27ae60"
-    elif overall >= 68:
+    elif overall >= 70:
         return "Hire", "#3498db"
     elif overall >= 50:
-        return "Borderline", "#f39c12"
+        return "Consider", "#f39c12"
     else:
         return "Needs Improvement", "#e74c3c"
 
@@ -1268,15 +1274,26 @@ def main():
                            'probs':[0.14]*7,'dim':4,
                            'frames_analyzed':0,'frames_used':0}
             if audio_r is None:
-                audio_r = {'vocal_tone':'Neutral','voice_stability':50,
-                            'energy_stability':50,'pitch_stability':50,
-                            'pitch_mean':0,'loudness_variation':0,
-                            'pace_label':'Unknown','words_per_minute':None,
-                            'silence_pct':0,'pause_count':0,
-                            'avg_pause_duration':0,'pause_ratio':0,
-                            'pause_control':'Unknown','confidence':0.5,
-                            'probs':[0.14]*6,'dim':4,
-                            'cnn_label':None,'cnn_decisive':False}
+                audio_r = {
+        'vocal_tone':'N/A',
+        'voice_stability':None,
+        'energy_stability':None,
+        'pitch_stability':None,
+        'pitch_mean':None,
+        'loudness_variation':None,
+        'pace_label':'N/A',
+        'words_per_minute':None,
+        'silence_pct':None,
+        'pause_count':None,
+        'avg_pause_duration':None,
+        'pause_ratio':None,
+        'pause_control':'N/A',
+        'confidence':0.5,
+        'probs':[0.14]*6,
+        'dim':4,
+        'cnn_label':None,
+        'cnn_decisive':False
+    }
 
             scores = confidence_weighted_fusion(
                 text_r, face_r, audio_r, sq, star, kw)
@@ -1350,20 +1367,37 @@ def main():
 
         with col4:
             st.subheader("🎤 Voice Analysis")
+
             st.markdown(
-                f'<div class="trait-card"><b>Vocal tone:</b> '
-                f'{audio_r["vocal_tone"]}</div>',
-                unsafe_allow_html=True)
-            st.progress(int(audio_r['voice_stability']),
-                         text=f"Voice stability: {audio_r['voice_stability']:.0f}%")
-            if audio_r.get('words_per_minute'):
-                st.markdown(
-                    f"**Pace:** {audio_r['pace_label']} "
-                    f"({audio_r['words_per_minute']:.0f} wpm)")
-            st.markdown(f"**Pause control:** {audio_r['pause_control']}")
-            st.caption(
-                f"{audio_r['pause_count']} pauses, "
-                f"{audio_r['silence_pct']:.0f}% silence overall")
+    f'<div class="trait-card"><b>Vocal tone:</b> {audio_r["vocal_tone"]}</div>',
+    unsafe_allow_html=True
+)
+
+            if audio_r["voice_stability"] is not None:
+
+                st.progress(
+        int(audio_r["voice_stability"]),
+        text=f"Voice stability: {audio_r['voice_stability']:.0f}%"
+    )
+
+                if audio_r.get("words_per_minute"):
+                    st.markdown(
+            f"**Pace:** {audio_r['pace_label']} "
+            f"({audio_r['words_per_minute']:.0f} wpm)"
+        )
+
+                st.markdown(f"**Pause control:** {audio_r['pause_control']}")
+
+                st.caption(
+        f"{audio_r['pause_count']} pauses | "
+        f"{audio_r['silence_pct']:.0f}% silence"
+    )
+
+    else:
+
+        st.write("**Voice Stability:** N/A")
+        st.write("**Pause Control:** N/A")
+        st.write("**Pace:** N/A")
 
         st.divider()
 
