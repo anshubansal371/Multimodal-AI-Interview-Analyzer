@@ -111,15 +111,47 @@ FILLER_WORDS = ['um','uh','like','so','you know','basically',
 
 SKILL_KEYWORDS = {
     'technical': [
-        'python','java','c','c++','sql',
-    'database','databases',
-    'machine learning','deep learning',
-    'tensorflow','pytorch',
-    'docker','kubernetes',
-    'web development','html','css','javascript',
-    'api','software','project',
-    'developed','built','implemented',
-    'designed','created','cloud'],
+    # Programming Languages
+    'python', 'java', 'c', 'c++', 'c#', 'sql', 'javascript',
+
+    # Web Technologies
+    'html', 'css', 'react', 'node', 'nodejs', 'express',
+    'web development', 'frontend', 'backend', 'full stack',
+
+    # Databases
+    'database', 'databases', 'mysql', 'mongodb', 'postgresql',
+
+    # AI / Machine Learning
+    'artificial intelligence', 'ai',
+    'machine learning', 'deep learning',
+    'computer vision',
+    'natural language processing', 'nlp',
+    'neural network', 'cnn', 'rnn',
+    'transformer', 'bert', 'roberta',
+    'whisper', 'opencv',
+    'tensorflow', 'keras', 'pytorch',
+    'hugging face',
+
+    # Cloud & DevOps
+    'docker', 'kubernetes', 'cloud',
+    'aws', 'azure', 'gcp',
+
+    # Software Engineering
+    'software', 'application', 'system',
+    'api', 'rest api', 'github', 'git',
+    'streamlit',
+
+    # Development Activities
+    'project', 'projects',
+    'developed', 'implemented',
+    'designed', 'created',
+    'built', 'optimized',
+    'tested', 'debugged',
+    'deployed', 'integrated',
+    'trained', 'fine-tuned',
+    'evaluation', 'dashboard',
+    'automation'
+],
     'leadership': [
         'led','managed','team','initiative','ownership',
         'mentored','coordinated','supervised','organized',
@@ -134,11 +166,23 @@ SKILL_KEYWORDS = {
         'issue','problem','tackle','overcome','identify',
         'diagnose','worked on','figured out','addressed'],
     'communication': [
-        'presented','explained','collaborated',
-        'discussed','communicated','reported','told',
-        'shared','informed','conveyed','worked with',
-        'talked','meeting','spoke','described',
-        'mentioned','expressed','interact'],
+    'presented','explained','collaborated','discussed','communicated',
+    'reported','told','shared','informed','conveyed','worked with','talked',
+    'meeting','spoke','described','mentioned','expressed','interact',
+
+    # Teamwork & Leadership
+    'team','teamwork','team player','leadership','leader','managed','management',
+    'project management','coordinated','organized','supervised','guided','mentored',
+
+    # Professional Communication
+    'communication','feedback','presentation','presentations','documentation',
+    'documentation writing','client','customer','stakeholder','interview','discussion',
+    'brainstorming','coordination','negotiation',
+
+    # Collaboration
+    'cooperate','cooperation','contributed','supported','assisted','volunteer',
+    'member','club','editor','committee','event','training'
+],
     'star_method': [
         'situation','task','action','result',
         'challenge','achieved','delivered','outcome',
@@ -1043,9 +1087,10 @@ def generate_feedback(scores, face_r, audio_r, text_r, sq, star, kw):
     if not strengths:
         strengths = ["Shows genuine engagement with the question",
                        "Completed a full response without trailing off"]
+    if face_r["camera_presence_pct"] > 0:
 
-    if scores['confidence'] < 60:
-        improvements.append(
+        if scores['confidence'] < 60:
+             improvements.append(
             f"On-camera presence was only "
             f"{face_r['camera_presence_pct']:.0f}% — try to keep "
             "your face clearly in frame and centered")
@@ -1170,6 +1215,7 @@ def main():
     tmp_path = None
     face_r, audio_r = None, None
     is_video = False
+    transcript_only = False
 
     with tab1:
         st.markdown(
@@ -1254,6 +1300,7 @@ def main():
             height=200)
         if st.button("🎯 Analyze Text", type="primary", key="btn_text"):
             transcript = transcript_input
+            transcript_only = True
 
     # ═══════════════════════════════════════
     if transcript and len(transcript) > 20:
@@ -1297,6 +1344,8 @@ def main():
 
             scores = confidence_weighted_fusion(
                 text_r, face_r, audio_r, sq, star, kw)
+            if transcript_only:
+                scores["confidence"] = round(text_r["confidence"] * 100, 1)
             fb = generate_feedback(
                 scores, face_r, audio_r, text_r, sq, star, kw)
             recommendation, rec_color = get_recommendation(
@@ -1353,17 +1402,21 @@ def main():
 
         col3, col4 = st.columns(2)
         with col3:
-            st.subheader("👁️ Camera Presence")
-            st.markdown(
-                f'<div class="trait-card"><b>Impression:</b> '
-                f'{face_r["display_label"]}</div>',
-                unsafe_allow_html=True)
-            st.progress(int(face_r['camera_presence_pct']),
-                         text=f"In frame: {face_r['camera_presence_pct']:.0f}%")
-            st.progress(int(face_r['smile_pct']),
-                         text=f"Smile frequency: {face_r['smile_pct']:.0f}%")
-            st.progress(int(face_r['consistency']),
-                         text=f"Consistency: {face_r['consistency']:.0f}%")
+            if transcript_only:
+               st.subheader("👁️ Camera Presence")
+               st.info("Camera analysis is not available for transcript-only mode.")
+            else:
+                 st.subheader("👁️ Camera Presence")   
+                 st.markdown(
+                    f'<div class="trait-card"><b>Impression:</b> '
+                    f'{face_r["display_label"]}</div>',
+                    unsafe_allow_html=True)
+                 st.progress(int(face_r['camera_presence_pct']),
+                             text=f"In frame: {face_r['camera_presence_pct']:.0f}%")
+                 st.progress(int(face_r['smile_pct']),
+                             text=f"Smile frequency: {face_r['smile_pct']:.0f}%")
+                 st.progress(int(face_r['consistency']),
+                             text=f"Consistency: {face_r['consistency']:.0f}%")
 
         with col4:
             st.subheader("🎤 Voice Analysis")
