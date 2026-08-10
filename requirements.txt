@@ -1,17 +1,45 @@
+# Core
+setuptools>=70.0.0
+numpy==1.26.4
+
+# Web framework
 streamlit>=1.28.0
+
+# Deep learning
 tensorflow-cpu==2.16.1
 torch==2.1.0
+torchaudio==2.1.0
+
+# NLP
 transformers==4.46.3
+
+# Speech transcription (fallback when no AAI key)
 openai-whisper
+
+# Speaker diarization + transcription (primary)
+assemblyai
+
+# AI feedback
+groq
+
+# Visualization
 plotly>=5.15.0
-numpy==1.26.4
+
+# Data
 pandas>=2.0.0
 scikit-learn>=1.3.0
+
+# Audio processing
 librosa==0.10.2.post1
-opencv-python-headless==4.8.0.76
-Pillow>=9.5.0
-gdown
+praat-parselmouth
 pydub
 scipy
-praat-parselmouth
-setuptools>=70.0.0
+soundfile
+
+# Video/Image
+opencv-python-headless==4.8.0.76
+Pillow>=9.5.0
+
+# Utilities
+gdown
+protobuf==4.25.3
