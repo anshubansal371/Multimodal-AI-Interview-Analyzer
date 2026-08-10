@@ -6,7 +6,6 @@ The system combines **Computer Vision, Speech Processing, Deep Learning, and Tra
 
 ---
 # LIVE DEMO:- https://multimodal-ai-interview-analyzer.streamlit.app/
-
 ---
 
 # 🚀 Features
